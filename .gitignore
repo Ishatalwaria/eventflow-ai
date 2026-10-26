@@ -15,4 +15,5 @@ build/
 dist/
 *.egg-info/
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
