@@ -1,5 +1,9 @@
 """PostgreSQL-backed settings for integration tests requiring real concurrency."""
 
+import os
+
+os.environ.setdefault("POSTGRES_PASSWORD", "test-only-placeholder")
+
 from .base import *  # noqa: F403
 
 if not env("EVENTFLOW_TEST_DATABASE_URL", default=""):  # noqa: F405
