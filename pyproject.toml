@@ -1,0 +1,46 @@
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eventflow-ai"
+version = "0.1.0"
+description = "Event-driven workflow and operational intelligence platform"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+   "Django>=6.1.2,<6.2",
+    "djangorestframework>=3.16,<4",
+    "drf-spectacular>=0.28,<1",
+    "django-environ>=0.12,<1",
+    "psycopg[binary]>=3.2,<4",
+    "gunicorn>=23,<24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9",
+    "pytest-django>=4.11,<5",
+    "ruff>=0.14,<1",
+]
+
+[tool.setuptools.packages.find]
+include = ["config*", "apps*"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.local"
+python_files = ["test_*.py", "*_tests.py"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["config", "apps"]
+extend-exclude = [".tmp", ".venv", ".venv312"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

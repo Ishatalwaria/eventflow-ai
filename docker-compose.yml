@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:16.6-bookworm
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-eventflow}
+      POSTGRES_USER: ${POSTGRES_USER:-eventflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eventflow-local}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.local
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-local-compose-only-key}
+      DEBUG: "${DEBUG:-true}"
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      POSTGRES_DB: ${POSTGRES_DB:-eventflow}
+      POSTGRES_USER: ${POSTGRES_USER:-eventflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eventflow-local}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      DATABASE_CONNECT_TIMEOUT: ${DATABASE_CONNECT_TIMEOUT:-3}
+      DATABASE_STATEMENT_TIMEOUT_MS: ${DATABASE_STATEMENT_TIMEOUT_MS:-3000}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
