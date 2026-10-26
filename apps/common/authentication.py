@@ -22,7 +22,7 @@ class APIClientAuthentication(BaseAuthentication):
         try:
             client_id, secret = parts[1].decode("ascii").split(".", maxsplit=1)
             client_uuid = uuid.UUID(client_id)
-        except (UnicodeDecodeError, ValueError):
+        except UnicodeDecodeError, ValueError:
             raise AuthenticationFailed("Invalid client credentials.") from None
 
         client = APIClient.objects.filter(pk=client_uuid, revoked_at__isnull=True).first()

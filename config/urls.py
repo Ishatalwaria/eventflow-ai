@@ -1,8 +1,14 @@
 from django.contrib import admin
-from django.urls import include, path
+from django.urls import include, path, reverse_lazy
+from django.views.generic import RedirectView
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 urlpatterns = [
+    path(
+        "",
+        RedirectView.as_view(url=reverse_lazy("swagger-ui"), permanent=False),
+        name="api-root",
+    ),
     path("admin/", admin.site.urls),
     path("health/", include("apps.common.urls")),
     path("api/v1/", include("apps.events.urls")),

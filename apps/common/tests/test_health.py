@@ -5,6 +5,13 @@ from django.db import OperationalError
 from rest_framework.test import APIClient
 
 
+def test_root_redirects_to_api_documentation():
+    response = APIClient().get("/")
+
+    assert response.status_code == 302
+    assert response["Location"] == "/api/docs/"
+
+
 def test_liveness_does_not_check_database():
     with patch("apps.common.health.connection.cursor", side_effect=OperationalError):
         response = APIClient().get("/health/live")
