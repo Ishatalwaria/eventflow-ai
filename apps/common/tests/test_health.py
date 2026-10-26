@@ -40,3 +40,9 @@ def test_openapi_schema_endpoint_is_available():
     schema = json.loads(response.content)
     assert "/health/live" in schema["paths"]
     assert "/health/ready" in schema["paths"]
+    assert "/api/v1/events" in schema["paths"]
+    assert "/api/v1/events/batch" in schema["paths"]
+    assert "/api/v1/events/{event_id}" in schema["paths"]
+    assert "/api/v1/workflows" in schema["paths"]
+    assert "/api/v1/workflows/{workflow_id}" in schema["paths"]
+    assert "ClientBearer" in schema["components"]["securitySchemes"]

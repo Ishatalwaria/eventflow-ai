@@ -28,7 +28,7 @@ dev = [
 include = ["config*", "apps*"]
 
 [tool.pytest.ini_options]
-DJANGO_SETTINGS_MODULE = "config.settings.local"
+DJANGO_SETTINGS_MODULE = "config.settings.test"
 python_files = ["test_*.py", "*_tests.py"]
 addopts = "-ra"
 
@@ -36,7 +36,7 @@ addopts = "-ra"
 line-length = 100
 target-version = "py314"
 src = ["config", "apps"]
-extend-exclude = [".tmp", ".venv", ".venv312"]
+extend-exclude = [".tmp", ".venv", ".venv312", "**/migrations/**"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

@@ -1,0 +1,50 @@
+from django.shortcuts import get_object_or_404
+from drf_spectacular.utils import extend_schema
+from rest_framework import generics
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from apps.common.authentication import APIClientAuthentication
+
+from .models import Workflow
+from .serializers import WorkflowDetailSerializer, WorkflowListQuerySerializer
+
+
+class WorkflowListView(generics.ListAPIView):
+    authentication_classes = [APIClientAuthentication]
+    permission_classes = [IsAuthenticated]
+    serializer_class = WorkflowDetailSerializer
+
+    def get_queryset(self):
+        return (
+            Workflow.objects.filter(event__client=self.request.user)
+            .select_related("event")
+            .prefetch_related("attempts")
+            .order_by("-created_at", "id")
+        )
+
+    @extend_schema(parameters=[WorkflowListQuerySerializer])
+    def list(self, request, *args, **kwargs):
+        query = WorkflowListQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        queryset = self.get_queryset()
+        if query.validated_data.get("state"):
+            queryset = queryset.filter(state=query.validated_data["state"])
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page, many=True)
+        return self.get_paginated_response(serializer.data)
+
+
+class WorkflowDetailView(APIView):
+    authentication_classes = [APIClientAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses={200: WorkflowDetailSerializer})
+    def get(self, request, workflow_id):
+        workflow = get_object_or_404(
+            Workflow.objects.select_related("event").prefetch_related("attempts"),
+            pk=workflow_id,
+            event__client=request.user,
+        )
+        return Response(WorkflowDetailSerializer(workflow).data)
