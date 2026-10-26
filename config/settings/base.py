@@ -35,6 +35,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "apps.common.middleware.RequestIDMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -106,10 +107,12 @@ REST_FRAMEWORK = {
         "rest_framework.authentication.BasicAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
-    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
-    "PAGE_SIZE": 50,
+    "DEFAULT_PAGINATION_CLASS": "apps.common.pagination.BoundedPageNumberPagination",
     "DEFAULT_THROTTLE_CLASSES": [],
+    "EXCEPTION_HANDLER": "apps.common.exceptions.api_exception_handler",
 }
+EVENT_MAX_REQUEST_BYTES = 262_144
+EVENT_BATCH_MAX_SIZE = 50
 SPECTACULAR_SETTINGS = {
     "TITLE": "EventFlow AI API",
     "DESCRIPTION": "Event-driven workflow and operational intelligence platform.",
