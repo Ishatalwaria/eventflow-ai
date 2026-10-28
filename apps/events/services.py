@@ -3,13 +3,13 @@ from dataclasses import dataclass
 
 from django.db import IntegrityError, transaction
 
-from apps.processing.models import OutboxMessage, ProcessingLog
+from apps.processing.models import ProcessingLog
+from apps.processing.outbox import record_initial_domain_outbox
 from apps.workflows.models import Workflow
 
 from .models import Event
 
 logger = logging.getLogger(__name__)
-OUTBOX_TOPIC = "event.accepted.v1"
 
 
 @dataclass(frozen=True)
@@ -17,19 +17,6 @@ class AcceptedEvent:
     event: Event
     workflow: Workflow
     duplicate: bool
-
-
-def _outbox_envelope(event):
-    return {
-        "event_id": str(event.id),
-        "event_type": event.event_type,
-        "schema_version": event.schema_version,
-        "source": event.source,
-        "idempotency_key": event.idempotency_key,
-        "occurred_at": event.occurred_at.isoformat(),
-        "correlation_id": event.correlation_id,
-        "payload": event.payload,
-    }
 
 
 def _create_one(*, client, envelope, request_id):
@@ -48,11 +35,7 @@ def _create_one(*, client, envelope, request_id):
                 payload=envelope["payload"],
             )
             workflow = Workflow.objects.create(event=event)
-            OutboxMessage.objects.create(
-                event=event,
-                topic=OUTBOX_TOPIC,
-                payload=_outbox_envelope(event),
-            )
+            record_initial_domain_outbox(event)
             ProcessingLog.objects.create(
                 event=event,
                 workflow=workflow,

@@ -1,3 +1,5 @@
+import re
+
 from .base import *  # noqa: F403
 
 DEBUG = False
@@ -22,6 +24,34 @@ database_options = database.setdefault("OPTIONS", {})
 sslmode = database_options.setdefault("sslmode", "require")
 if sslmode not in {"require", "verify-ca", "verify-full"}:
     raise RuntimeError("Production PostgreSQL connections must require TLS")
+
+if KAFKA_SECURITY_PROTOCOL not in {"SSL", "SASL_SSL"}:  # noqa: F405
+    raise RuntimeError("Production Kafka connections must use SSL or SASL_SSL")
+if KAFKA_SECURITY_PROTOCOL == "SASL_SSL" and not all(  # noqa: F405
+    [KAFKA_SASL_MECHANISM, KAFKA_SASL_USERNAME, KAFKA_SASL_PASSWORD]  # noqa: F405
+):
+    raise RuntimeError("Production SASL_SSL Kafka requires mechanism, username, and password")
+if not RABBITMQ_USE_TLS:  # noqa: F405
+    raise RuntimeError("Production RabbitMQ connections must use TLS")
+if RABBITMQ_USERNAME.lower() == "guest" or len(RABBITMQ_PASSWORD) < 24:  # noqa: F405
+    raise RuntimeError("Production RabbitMQ requires a dedicated user and strong password")
+
+
+def _is_local_host(host):
+    return host.lower().strip("[]") in {"localhost", "127.0.0.1", "::1"}
+
+
+if _is_local_host(RABBITMQ_HOST):  # noqa: F405
+    raise RuntimeError("Production RabbitMQ must use a non-local host")
+
+kafka_hosts = []
+for server in KAFKA_BOOTSTRAP_SERVERS.split(","):  # noqa: F405
+    match = re.fullmatch(r"\s*(\[[0-9a-fA-F:]+\]|[^:\s,]+):(\d{1,5})\s*", server)
+    if match is None or int(match.group(2)) > 65535:
+        raise RuntimeError("KAFKA_BOOTSTRAP_SERVERS must be a comma-separated host:port list")
+    kafka_hosts.append(match.group(1).strip("[]"))
+if any(_is_local_host(host) for host in kafka_hosts):
+    raise RuntimeError("Production Kafka must use non-local broker hosts")
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SESSION_COOKIE_SECURE = True

@@ -1,3 +1,39 @@
+x-eventflow-environment: &eventflow-environment
+  DJANGO_SETTINGS_MODULE: config.settings.local
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in .env}
+  DEBUG: "${DEBUG:-true}"
+  ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+  POSTGRES_DB: ${POSTGRES_DB:-eventflow}
+  POSTGRES_USER: ${POSTGRES_USER:-eventflow-user}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+  POSTGRES_HOST: db
+  POSTGRES_PORT: 5432
+  DATABASE_CONNECT_TIMEOUT: ${DATABASE_CONNECT_TIMEOUT:-3}
+  DATABASE_STATEMENT_TIMEOUT_MS: ${DATABASE_STATEMENT_TIMEOUT_MS:-3000}
+  DATABASE_CONN_MAX_AGE: ${DATABASE_CONN_MAX_AGE:-60}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+  KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-eventflow.kafka-to-rabbit.v1}
+  BROKER_CONNECT_TIMEOUT: ${BROKER_CONNECT_TIMEOUT:-5}
+  OUTBOX_MAX_ATTEMPTS: ${OUTBOX_MAX_ATTEMPTS:-12}
+  OUTBOX_LEASE_SECONDS: ${OUTBOX_LEASE_SECONDS:-60}
+  OUTBOX_ALERT_AGE_SECONDS: ${OUTBOX_ALERT_AGE_SECONDS:-300}
+  WORKER_MAX_ATTEMPTS: ${WORKER_MAX_ATTEMPTS:-3}
+  RABBITMQ_HOST: rabbitmq
+  RABBITMQ_PORT: 5672
+  RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-eventflow-local}
+  RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}
+  RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
+  RABBITMQ_USE_TLS: "false"
+
+x-eventflow-app: &eventflow-app
+  build:
+    context: .
+    pull: true
+  restart: unless-stopped
+  environment: *eventflow-environment
+
 services:
   db:
     image: postgres:16.6-bookworm
@@ -6,7 +42,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-eventflow-user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_EXPOSED_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -15,30 +51,110 @@ services:
       timeout: 3s
       retries: 10
 
-  api:
-    build: .
-    environment:
-      DJANGO_SETTINGS_MODULE: config.settings.local
-      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in .env}
-      DEBUG: "${DEBUG:-true}"
-      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
-      POSTGRES_DB: ${POSTGRES_DB:-eventflow}
-      POSTGRES_USER: ${POSTGRES_USER:-eventflow-user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      POSTGRES_HOST: db
-      POSTGRES_PORT: 5432
-      DATABASE_CONNECT_TIMEOUT: ${DATABASE_CONNECT_TIMEOUT:-3}
-      DATABASE_STATEMENT_TIMEOUT_MS: ${DATABASE_STATEMENT_TIMEOUT_MS:-3000}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    ports:
-      - "127.0.0.1:8000:8000"
-    command:
-      - sh
-      - -c
-      - python -m django migrate --noinput && exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 30
+  migrate:
+    <<: *eventflow-app
+    restart: "no"
+    command: ["python", "manage.py", "migrate", "--noinput"]
     depends_on:
       db:
         condition: service_healthy
 
+  api:
+    <<: *eventflow-app
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  kafka:
+    image: apache/kafka:4.3.2
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    ports:
+      - "127.0.0.1:29092:29092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  kafka-init:
+    image: apache/kafka:4.3.2
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - >-
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic eventflow.domain.events.v1 --partitions 3 --replication-factor 1
+        && /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic eventflow.workflow.lifecycle.v1 --partitions 3 --replication-factor 1
+        && /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic eventflow.integration.events.v1 --partitions 1 --replication-factor 1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+
+  rabbitmq:
+    image: rabbitmq:4.2-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-eventflow-local}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-/}
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  outbox-publisher:
+    <<: *eventflow-app
+    command: ["python", "manage.py", "publish_outbox"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+
+  kafka-consumer:
+    <<: *eventflow-app
+    command: ["python", "manage.py", "consume_domain_events"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  workflow-worker:
+    <<: *eventflow-app
+    command: ["python", "manage.py", "process_workflows"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
 volumes:
   postgres_data:
+  kafka_data:
+  rabbitmq_data:

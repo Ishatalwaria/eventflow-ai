@@ -53,6 +53,7 @@ class WorkflowAttempt(models.Model):
         SUCCEEDED = "SUCCEEDED", "Succeeded"
         RETRYING = "RETRYING", "Retrying"
         FAILED = "FAILED", "Failed"
+        DEAD_LETTERED = "DEAD_LETTERED", "Dead lettered"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workflow = models.ForeignKey(Workflow, on_delete=models.CASCADE, related_name="attempts")
@@ -72,7 +73,9 @@ class WorkflowAttempt(models.Model):
                 name="workflow_stage_attempt_uniq",
             ),
             models.CheckConstraint(
-                condition=models.Q(outcome__in=["STARTED", "SUCCEEDED", "RETRYING", "FAILED"]),
+                condition=models.Q(
+                    outcome__in=["STARTED", "SUCCEEDED", "RETRYING", "FAILED", "DEAD_LETTERED"]
+                ),
                 name="attempt_outcome_valid",
             ),
         ]

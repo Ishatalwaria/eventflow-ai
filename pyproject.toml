@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 name = "eventflow-ai"
 version = "0.1.0"
 description = "Event-driven workflow and operational intelligence platform"
-requires-python = ">=3.14,<3.15"
+requires-python = ">=3.12,<3.15"
 dependencies = [
    "Django>=6.1.2,<6.2",
     "djangorestframework>=3.16,<4",
@@ -15,6 +15,8 @@ dependencies = [
     "django-environ>=0.12,<1",
     "psycopg[binary]>=3.2,<4",
     "gunicorn>=23,<24",
+    "confluent-kafka>=2.12,<3",
+    "pika>=1.4,<2",
 ]
 
 [project.optional-dependencies]
@@ -31,10 +33,11 @@ include = ["config*", "apps*"]
 DJANGO_SETTINGS_MODULE = "config.settings.test"
 python_files = ["test_*.py", "*_tests.py"]
 addopts = "-ra"
+markers = ["integration: requires live local Kafka and RabbitMQ services"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py314"
+target-version = "py312"
 src = ["config", "apps"]
 extend-exclude = [".tmp", ".venv", ".venv312", "**/migrations/**"]
 

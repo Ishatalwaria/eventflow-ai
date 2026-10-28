@@ -4,7 +4,7 @@ install:
 	python -m pip install -e ".[dev]"
 
 run:
-	python -m django runserver 0.0.0.0:8000
+	python manage.py runserver 0.0.0.0:8000
 
 test:
 	pytest
@@ -18,12 +18,12 @@ format:
 	ruff format .
 
 check:
-	python -m django check
+	python manage.py check
 	pytest
 	ruff check .
 
 migrate:
-	python -m django migrate
+	python manage.py migrate
 
 compose-up:
 	docker compose up --build

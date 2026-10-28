@@ -231,7 +231,7 @@ def test_transaction_rolls_back_event_workflow_and_outbox(api_credentials, monke
     def fail_outbox(*args, **kwargs):
         raise RuntimeError("outbox failure")
 
-    monkeypatch.setattr(services.OutboxMessage.objects, "create", fail_outbox)
+    monkeypatch.setattr(services, "record_initial_domain_outbox", fail_outbox)
     serializer = EventEnvelopeSerializer(data=envelope)
     assert serializer.is_valid()
     with pytest.raises(RuntimeError, match="outbox failure"):
@@ -253,7 +253,7 @@ def test_unexpected_api_failure_returns_safe_error_and_rolls_back(api_credential
     def fail_outbox(*args, **kwargs):
         raise RuntimeError("sensitive database detail")
 
-    monkeypatch.setattr(services.OutboxMessage.objects, "create", fail_outbox)
+    monkeypatch.setattr(services, "record_initial_domain_outbox", fail_outbox)
     response = post_event(token)
 
     assert response.status_code == 500
