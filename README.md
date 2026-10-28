@@ -27,13 +27,21 @@ The API is available at `http://localhost:8000`. Interactive OpenAPI documentati
 
 ## API client credentials
 
-Create a client credential with:
+For the API running in Docker Compose, create credentials inside the API container so the credential is written to the same PostgreSQL database that the API uses:
 
-```sh
-python manage.py client_credentials create --name "local-demo"
+```powershell
+docker compose exec -T api python manage.py client_credentials create --name "local-demo"
 ```
 
-The command prints a bearer token once. Store it in a password manager or local environment variable; the database stores only a password hash. Rotate an active client with `python manage.py client_credentials rotate --client-id <CLIENT_UUID>` and revoke it with `python manage.py client_credentials revoke --client-id <CLIENT_UUID>`. Rotation invalidates the old secret; revocation immediately disables the credential. Do not paste tokens into logs or commit them.
+The command prints a bearer token once. In Swagger's **Authorize** dialog, paste the full `CLIENT_UUID.SECRET` token without adding `Bearer`; Swagger adds that prefix to the request. Store the token securely because the database stores only its hash, so it cannot be retrieved later. Tokens do not expire automatically; rotation invalidates the previous secret, and revocation immediately disables the client.
+
+Rotate an exposed or lost token in the same environment where the API is running:
+
+```powershell
+docker compose exec -T api python manage.py client_credentials rotate --client-id <CLIENT_UUID>
+```
+
+If running Django directly on the host instead of using the Compose API, use `python manage.py client_credentials ...` only when the host process and command use the same `DATABASE_URL`. Compose PostgreSQL is exposed to the host on port `5433` by default, while containers connect to `db:5432`. Creating a credential in a different database from the API causes `401 Unauthorized`.
 
 ## Event API
 
