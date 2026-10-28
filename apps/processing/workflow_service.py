@@ -81,7 +81,7 @@ def _transition(workflow, target):
     workflow.save(update_fields=["state", "updated_at"])
 
 
-def _record_lifecycle(workflow, event_type, attempt_number, *, error_code=""):
+def _record_lifecycle(workflow, event_type, attempt_number, *, error_code="", duration_ms=None):
     recorded_at = timezone.now()
     OutboxMessage.objects.create(
         event=workflow.event,
@@ -100,6 +100,7 @@ def _record_lifecycle(workflow, event_type, attempt_number, *, error_code=""):
                 "stage": STAGE,
                 "attempt_number": attempt_number,
                 "error_code": error_code,
+                "duration_ms": duration_ms,
             },
         },
     )
@@ -263,7 +264,13 @@ def process_workflow_task(task, *, inventory_checker=None):
         )
         message = "Order processing completed" if action == "ACK" else detail
         _write_log(workflow, attempt, message, level=log_level, error_code=error_code)
-        _record_lifecycle(workflow, event_type, attempt_number, error_code=error_code)
+        _record_lifecycle(
+            workflow,
+            event_type,
+            attempt_number,
+            error_code=error_code,
+            duration_ms=attempt.duration_ms,
+        )
 
         retry_index = attempt_number - 1 if action == "RETRY" else None
         if retry_index is not None and retry_index >= len(settings.WORKER_RETRY_DELAYS_SECONDS):

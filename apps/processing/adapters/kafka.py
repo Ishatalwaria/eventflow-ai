@@ -59,7 +59,7 @@ class ConfluentKafkaPublisher(KafkaPublisher):
 
 
 class ConfluentKafkaConsumer:
-    """Consumer with manual, synchronous offset commits after Rabbit confirms."""
+    """Consumer with manual, synchronous offset commits after the sink confirms."""
 
     def __init__(self, *, bootstrap_servers, group_id=KAFKA_CONSUMER_GROUP, topic=DOMAIN_TOPIC):
         self._consumer = Consumer(

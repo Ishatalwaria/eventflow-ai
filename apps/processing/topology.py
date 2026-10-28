@@ -2,6 +2,7 @@ DOMAIN_TOPIC = "eventflow.domain.events.v1"
 LIFECYCLE_TOPIC = "eventflow.workflow.lifecycle.v1"
 INTEGRATION_TOPIC = "eventflow.integration.events.v1"
 KAFKA_CONSUMER_GROUP = "eventflow.kafka-to-rabbit.v1"
+ANALYTICS_CONSUMER_GROUP = "eventflow.clickhouse-analytics.v1"
 
 TASK_EXCHANGE = "eventflow.tasks.x"
 TASK_QUEUE = "eventflow.tasks.order-validation.q"

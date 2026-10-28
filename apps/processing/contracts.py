@@ -97,6 +97,34 @@ def validate_lifecycle_event(value):
         raise ContractError("Lifecycle workflow ID is invalid.") from None
     if value["event_type"] not in LIFECYCLE_EVENT_TYPES:
         raise ContractError("Unsupported lifecycle event type.")
+    payload = value["payload"]
+    if (
+        not isinstance(payload.get("state"), str)
+        or payload["state"]
+        not in {
+            "RECEIVED",
+            "QUEUED",
+            "PROCESSING",
+            "RETRY_WAIT",
+            "SUCCEEDED",
+            "FAILED",
+            "DEAD_LETTERED",
+        }
+        or not isinstance(payload.get("stage"), str)
+        or not 1 <= len(payload["stage"]) <= 100
+        or type(payload.get("attempt_number")) is not int
+        or not 1 <= payload["attempt_number"] <= 65535
+        or not isinstance(payload.get("error_code", ""), str)
+        or len(payload.get("error_code", "")) > 100
+        or (
+            payload.get("duration_ms") is not None
+            and (
+                type(payload["duration_ms"]) is not int
+                or not 0 <= payload["duration_ms"] <= 4_294_967_295
+            )
+        )
+    ):
+        raise ContractError("Lifecycle payload fields are invalid.")
 
 
 def encode_message(value, *, lifecycle=False):

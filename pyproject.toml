@@ -17,6 +17,7 @@ dependencies = [
     "gunicorn>=23,<24",
     "confluent-kafka>=2.12,<3",
     "pika>=1.4,<2",
+    "clickhouse-connect>=0.9,<1",
 ]
 
 [project.optional-dependencies]
@@ -33,7 +34,7 @@ include = ["config*", "apps*"]
 DJANGO_SETTINGS_MODULE = "config.settings.test"
 python_files = ["test_*.py", "*_tests.py"]
 addopts = "-ra"
-markers = ["integration: requires live local Kafka and RabbitMQ services"]
+markers = ["integration: requires live local infrastructure services"]
 
 [tool.ruff]
 line-length = 100

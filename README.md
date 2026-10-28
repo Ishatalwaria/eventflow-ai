@@ -61,7 +61,7 @@ If `.env` does not exist, copy `.env.example` to `.env`; otherwise merge the doc
 docker compose up --build
 ```
 
-Compose starts PostgreSQL, a single-node KRaft Kafka broker, RabbitMQ, the API, an outbox publisher, a Kafka-to-Rabbit consumer, and a workflow worker. Set `RABBITMQ_PASSWORD` in `.env` before running Compose. Ports bind to localhost. To stop the stack, run `docker compose down`; this preserves database and broker volumes. Do not use `-v` unless you intentionally want to delete local data.
+Compose starts PostgreSQL, a single-node KRaft Kafka broker, RabbitMQ, ClickHouse, the API, an outbox publisher, a Kafka-to-Rabbit consumer, a workflow worker, and a lifecycle analytics consumer. ClickHouse's Compose credentials default to a local-only development value; override them in `.env` for a shared development machine. Ports bind to localhost. To stop the stack, run `docker compose down`; this preserves database and broker volumes. Do not use `-v` unless you intentionally want to delete local data.
 
 RabbitMQ reads `RABBITMQ_DEFAULT_PASS` only when its data volume is initialized. If you change `RABBITMQ_PASSWORD` later, update the existing RabbitMQ user's password as well; changing `.env` alone does not rotate a credential already stored in the volume. The live RabbitMQ integration test uses the same `RABBITMQ_HOST`, `RABBITMQ_USERNAME`, `RABBITMQ_PASSWORD`, TLS, and CA settings as the application, and fails with a configuration message if those credentials do not match the running broker.
 
@@ -75,6 +75,39 @@ python manage.py outbox_status --check
 ```
 
 RabbitMQ's management UI is available at `http://localhost:15672` using the local `.env` credentials. Kafka topics are explicitly created by `kafka-init`; the domain and lifecycle topics use three partitions. The local RabbitMQ topology uses quorum queues with a single replica and is for development only.
+
+## M3 ClickHouse lifecycle analytics
+
+`docker/clickhouse/init/001-workflow-lifecycle.sql` creates `eventflow.workflow_lifecycle_facts`, a monthly-partitioned `ReplacingMergeTree` ordered by event date, workflow, event time, and deterministic lifecycle ID. Terminal lifecycle records include stage attempt duration; older v1 lifecycle records without duration remain readable and have a NULL latency. Workflow lifecycle event time is `recorded_at`; measured latency is the individual stage attempt duration, not total end-to-end workflow time.
+
+The analytics process consumes `eventflow.workflow.lifecycle.v1` in the independent `eventflow.clickhouse-analytics.v1` consumer group and commits Kafka offsets only after ClickHouse confirms the insert. If ClickHouse is unavailable, the current offset is left uncommitted and retried with capped exponential wait; Kafka retains the durable replay point. This is at-least-once delivery, not cross-system exactly-once. A deterministic lifecycle ID plus `ReplacingMergeTree` makes duplicate inserts logically idempotent; analytics reads use `FINAL` for immediate query-time deduplication because background merges are eventual. [ClickHouse documents that ReplacingMergeTree merges are asynchronous and recommends `FINAL` when query-time deduplication is required](https://clickhouse.com/resources/engineering/clickhouse-optimize-table-final). PostgreSQL remains the source of truth for current workflow state, and ClickHouse can lag behind it.
+
+You do **not** need to install or create a second database server. Compose runs a separate ClickHouse service and creates the logical `eventflow` database and lifecycle table automatically. It is separate from PostgreSQL because ClickHouse is an analytics store; PostgreSQL remains the transactional source of truth. The `clickhouse_data` Docker volume preserves analytics data.
+
+The Compose application containers connect using `CLICKHOUSE_HOST=clickhouse`; a Django command run from your Windows host connects through `localhost:8123`. Add these values to the existing project `.env` (do not replace the rest of your file). The password below matches the local-only default used by Compose when the ClickHouse volume was first initialized:
+
+```dotenv
+CLICKHOUSE_HOST=localhost
+CLICKHOUSE_PORT=8123
+CLICKHOUSE_DATABASE=eventflow
+CLICKHOUSE_USERNAME=eventflow
+CLICKHOUSE_PASSWORD=eventflow-local-only
+CLICKHOUSE_SECURE=false
+CLICKHOUSE_CONNECT_TIMEOUT=3
+CLICKHOUSE_SEND_RECEIVE_TIMEOUT=5
+```
+
+This password is only for an isolated local development stack; set a unique secret and TLS endpoint for production. ClickHouse stores its initialized user in its volume, so changing `CLICKHOUSE_PASSWORD` in `.env` later does not itself rotate the password inside an already initialized ClickHouse volume. Keep the `.env` value in sync with the currently configured ClickHouse user or perform a deliberate ClickHouse user-password rotation.
+
+After `docker compose up -d --build`, verify the ClickHouse table and inspect the projected metrics (bounded to at most 367 days):
+
+```powershell
+docker compose ps
+docker compose exec clickhouse clickhouse-client --user eventflow --password eventflow-local-only --query "SHOW TABLES FROM eventflow"
+python manage.py analytics_report --from 2026-01-01 --to 2026-12-31
+```
+
+The report includes terminal outcomes per minute, success/failure rate, p50/p95/p99 stage-attempt latency, retry counts per workflow, frequent error codes, failure rate by stage, and the oldest/latest projected event timestamp. The table-inspection command uses the local-only default password; if you use another local value, pass that value to `clickhouse-client`. Set `EVENTFLOW_RUN_CLICKHOUSE_INTEGRATION=1` and run `pytest -m integration apps/analytics/tests` with the Compose ClickHouse service available to run the real seeded-data check. Unit tests cover field mapping, deterministic identity, and offset non-commit when ClickHouse fails.
 
 ## Health endpoints
 

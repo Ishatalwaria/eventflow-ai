@@ -26,6 +26,14 @@ x-eventflow-environment: &eventflow-environment
   RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}
   RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
   RABBITMQ_USE_TLS: "false"
+  CLICKHOUSE_HOST: clickhouse
+  CLICKHOUSE_PORT: 8123
+  CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-eventflow}
+  CLICKHOUSE_USERNAME: ${CLICKHOUSE_USERNAME:-eventflow}
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-eventflow-local-only}
+  CLICKHOUSE_SECURE: "false"
+  CLICKHOUSE_CONNECT_TIMEOUT: ${CLICKHOUSE_CONNECT_TIMEOUT:-3}
+  CLICKHOUSE_SEND_RECEIVE_TIMEOUT: ${CLICKHOUSE_SEND_RECEIVE_TIMEOUT:-5}
 
 x-eventflow-app: &eventflow-app
   build:
@@ -125,6 +133,24 @@ services:
       timeout: 5s
       retries: 12
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-eventflow}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USERNAME:-eventflow}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-eventflow-local-only}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "127.0.0.1:8123:8123"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./docker/clickhouse/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "${CLICKHOUSE_USERNAME:-eventflow}", "--password", "${CLICKHOUSE_PASSWORD:-eventflow-local-only}", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   outbox-publisher:
     <<: *eventflow-app
     command: ["python", "manage.py", "publish_outbox"]
@@ -154,7 +180,19 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  analytics-consumer:
+    <<: *eventflow-app
+    command: ["python", "manage.py", "consume_lifecycle_analytics"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+      clickhouse:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   kafka_data:
   rabbitmq_data:
+  clickhouse_data:

@@ -44,6 +44,13 @@ def _is_local_host(host):
 if _is_local_host(RABBITMQ_HOST):  # noqa: F405
     raise RuntimeError("Production RabbitMQ must use a non-local host")
 
+if not CLICKHOUSE_SECURE:  # noqa: F405
+    raise RuntimeError("Production ClickHouse connections must use TLS")
+if _is_local_host(CLICKHOUSE_HOST):  # noqa: F405
+    raise RuntimeError("Production ClickHouse must use a non-local host")
+if not CLICKHOUSE_PASSWORD:  # noqa: F405
+    raise RuntimeError("Production ClickHouse requires a dedicated password")
+
 kafka_hosts = []
 for server in KAFKA_BOOTSTRAP_SERVERS.split(","):  # noqa: F405
     match = re.fullmatch(r"\s*(\[[0-9a-fA-F:]+\]|[^:\s,]+):(\d{1,5})\s*", server)
