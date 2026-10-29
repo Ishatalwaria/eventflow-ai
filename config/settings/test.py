@@ -11,4 +11,10 @@ DATABASES = {
         "NAME": ":memory:",
     }
 }
+# Automated tests must never depend on an external provider or consume API quota,
+# even when a developer's .env selects the live provider for local development.
+INCIDENT_LLM_PROVIDER = "mock"
+OPENAI_API_KEY = ""
+GEMINI_API_KEY = ""
+INCIDENT_SUMMARY_RATE_LIMIT = 5
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]

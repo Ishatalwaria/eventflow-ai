@@ -109,6 +109,34 @@ python manage.py analytics_report --from 2026-01-01 --to 2026-12-31
 
 The report includes terminal outcomes per minute, success/failure rate, p50/p95/p99 stage-attempt latency, retry counts per workflow, frequent error codes, failure rate by stage, and the oldest/latest projected event timestamp. The table-inspection command uses the local-only default password; if you use another local value, pass that value to `clickhouse-client`. Set `EVENTFLOW_RUN_CLICKHOUSE_INTEGRATION=1` and run `pytest -m integration apps/analytics/tests` with the Compose ClickHouse service available to run the real seeded-data check. Unit tests cover field mapping, deterministic identity, and offset non-commit when ClickHouse fails.
 
+## M4 Evidence-grounded incident assistant
+
+`POST /api/v1/workflows/{workflow_id}/incident-summary` creates and persists an analysis for a failed or dead-lettered workflow owned by the authenticated API client. It is rate-limited per client using a PostgreSQL-backed one-hour window. Production defaults to five requests per hour; local development defaults to 30 requests per hour to allow Swagger iteration (`INCIDENT_SUMMARY_RATE_LIMIT` can override the local value up to 100). Select `INCIDENT_LLM_PROVIDER=gemini` and configure `GEMINI_API_KEY` plus `GEMINI_MODEL` to use Google Gemini; the low-latency default is `gemini-3.5-flash-lite`. If the configured model times out, the adapter makes one bounded failover request to `GEMINI_FALLBACK_MODEL` (defaults to `gemini-3.5-flash-lite`); it never switches to the mock provider. The adapter uses structured JSON output and validates all evidence citations before persistence. `INCIDENT_LLM_PROVIDER=openai` uses `OPENAI_API_KEY` and `OPENAI_MODEL`. Local development defaults to the deterministic `mock` provider unless changed in `.env`. Automated tests always use the mock and do not need provider credentials.
+
+The evidence builder uses a 24-hour window, at most 20 attempts, at most 18 logs, 40 total items, and short sanitized text. It never includes event payloads or arbitrary log attributes. Health metrics are currently reported as unavailable because M1–M3 do not provide workflow-correlated health measurements. Each summary stores the evidence snapshot and SHA-256 hash, prompt version, provider/model, token usage when reported, latency, and creation time. PostgreSQL remains authoritative; an assistant summary is an explanation, not a workflow state transition. Provider retry is capped, and provider errors return safe API errors without persisting a partial summary.
+
+The OpenAI adapter uses strict structured output, disables tools and provider-side storage, and applies a response-size cap. The Gemini adapter uses `generateContent` structured JSON output, sends its API key in the `x-goog-api-key` header, omits tool configuration, and applies the same timeout, output-token, and response-size limits. Provider calls default to a 45-second socket timeout, two total attempts, and a 120-second Gunicorn worker timeout; configuration validation prevents a provider timeout/retry budget above 100 seconds. Both adapters apply bounded retries only to transient failures. Evidence text is untrusted input and is never allowed to act as instructions. All factual claims and hypotheses must cite IDs from supplied evidence; application validation rejects unknown IDs, malformed structures, and an unmarked insufficient-evidence response. The assistant cannot run SQL or commands, publish messages, replay work, or mutate workflow state. See [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) and [Gemini structured outputs](https://ai.google.dev/gemini-api/docs/generate-content/structured-output) for provider constrained JSON behavior.
+
+Example evidence-grounded incident:
+
+```json
+{
+  "headline": "The workflow recorded timeout failures; the underlying cause remains unconfirmed.",
+  "confirmed_facts": [
+    {"statement": "Workflow state is DEAD_LETTERED at order_validation.", "evidence_ids": ["workflow:timeout"]},
+    {"statement": "Two recorded attempts ended with WORKER_TIMEOUT.", "evidence_ids": ["attempt:timeout-a1", "attempt:timeout-a2"]}
+  ],
+  "hypotheses": [
+    {"statement": "A recurring timeout condition likely contributed, but the available records do not identify its source.", "evidence_ids": ["attempt:timeout-a1", "attempt:timeout-a2"], "confidence": 0.75}
+  ],
+  "unknowns": ["The cause of the timeouts is not established.", "Workflow-correlated dependency health metrics are unavailable."],
+  "recommended_checks": ["Review worker and dependency telemetry around the cited attempt timestamps."],
+  "insufficient_evidence": false
+}
+```
+
+The workflow state is supported by `workflow:timeout`; the timeout pattern by the two cited attempt records. The cause stays a hypothesis because neither attempt proves which component caused the timeout. The missing telemetry statement is supported by the health-metrics availability item in the saved evidence snapshot. For automated evaluation, the labeled dataset is in `apps/incidents/tests/fixtures/labeled_incidents.json`; it covers repeated timeouts, invalid business data, worker crash, insufficient evidence, and prompt-injection-like log text.
+
 ## Health endpoints
 
 - `GET /health/live` returns `200 {"status":"ok"}` when the process can serve requests. It does not query PostgreSQL.

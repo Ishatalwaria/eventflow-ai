@@ -3,6 +3,9 @@ import re
 from .base import *  # noqa: F403
 
 DEBUG = False
+INCIDENT_SUMMARY_RATE_LIMIT = env.int("INCIDENT_SUMMARY_RATE_LIMIT", default=5)  # noqa: F405
+if not 1 <= INCIDENT_SUMMARY_RATE_LIMIT <= 100:
+    raise RuntimeError("INCIDENT_SUMMARY_RATE_LIMIT must be between 1 and 100")
 if not SECRET_KEY:  # noqa: F405
     raise RuntimeError("DJANGO_SECRET_KEY must be set in production")
 if len(SECRET_KEY) < 50 or "local-only" in SECRET_KEY:  # noqa: F405
@@ -50,6 +53,17 @@ if _is_local_host(CLICKHOUSE_HOST):  # noqa: F405
     raise RuntimeError("Production ClickHouse must use a non-local host")
 if not CLICKHOUSE_PASSWORD:  # noqa: F405
     raise RuntimeError("Production ClickHouse requires a dedicated password")
+
+if INCIDENT_LLM_PROVIDER not in {"openai", "gemini"}:  # noqa: F405
+    raise RuntimeError("Production must configure INCIDENT_LLM_PROVIDER=openai or gemini")
+if INCIDENT_LLM_PROVIDER == "openai" and not OPENAI_API_KEY:  # noqa: F405
+    raise RuntimeError("Production incident analysis requires OPENAI_API_KEY")
+if INCIDENT_LLM_PROVIDER == "gemini" and not GEMINI_API_KEY:  # noqa: F405
+    raise RuntimeError("Production incident analysis requires GEMINI_API_KEY")
+if INCIDENT_LLM_PROVIDER == "openai" and not OPENAI_MODEL:  # noqa: F405
+    raise RuntimeError("Production incident analysis requires OPENAI_MODEL")
+if INCIDENT_LLM_PROVIDER == "gemini" and not GEMINI_MODEL:  # noqa: F405
+    raise RuntimeError("Production incident analysis requires GEMINI_MODEL")
 
 kafka_hosts = []
 for server in KAFKA_BOOTSTRAP_SERVERS.split(","):  # noqa: F405

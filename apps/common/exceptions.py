@@ -6,6 +6,7 @@ from rest_framework.exceptions import (
     NotAuthenticated,
     NotFound,
     ParseError,
+    Throttled,
     ValidationError,
 )
 from rest_framework.response import Response
@@ -44,10 +45,24 @@ def api_exception_handler(exc, context):
         code, message = "RESOURCE_NOT_FOUND", "The requested resource was not found."
     elif isinstance(exc, ParseError):
         code, message = "INVALID_REQUEST_BODY", "The request body is invalid."
+    elif isinstance(exc, Throttled):
+        code = "THROTTLED"
+        wait = getattr(exc, "wait", None)
+        if wait:
+            wait_seconds = max(1, int(wait))
+            message = f"Rate limit exceeded. Retry in about {wait_seconds} seconds."
+        else:
+            message = "Rate limit exceeded. Please wait before retrying."
     elif response.status_code == 413:
         code, message = "REQUEST_TOO_LARGE", "The request body exceeds the allowed size."
     else:
-        code, message = "API_ERROR", "The request could not be completed."
+        exception_code = getattr(exc, "default_code", "error")
+        code = (
+            str(exception_code).upper()
+            if isinstance(exception_code, str) and exception_code != "error"
+            else "API_ERROR"
+        )
+        message = "The request could not be completed."
 
     response.data = {
         "error": {

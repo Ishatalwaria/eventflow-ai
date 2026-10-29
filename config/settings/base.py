@@ -37,6 +37,17 @@ env = environ.Env(
     CLICKHOUSE_SECURE=(bool, False),
     CLICKHOUSE_CONNECT_TIMEOUT=(float, 3.0),
     CLICKHOUSE_SEND_RECEIVE_TIMEOUT=(float, 5.0),
+    INCIDENT_LLM_PROVIDER=(str, "mock"),
+    OPENAI_API_KEY=(str, ""),
+    OPENAI_MODEL=(str, "gpt-4.1-mini"),
+    GEMINI_API_KEY=(str, ""),
+    GEMINI_MODEL=(str, "gemini-3.5-flash-lite"),
+    GEMINI_FALLBACK_MODEL=(str, "gemini-3.5-flash-lite"),
+    INCIDENT_LLM_TIMEOUT_SECONDS=(float, 45.0),
+    INCIDENT_LLM_MAX_OUTPUT_TOKENS=(int, 1200),
+    INCIDENT_LLM_MAX_ATTEMPTS=(int, 2),
+    INCIDENT_LLM_RETRY_DELAY_SECONDS=(float, 0.25),
+    INCIDENT_SUMMARY_RATE_LIMIT=(int, 5),
 )
 environ.Env.read_env(BASE_DIR / ".env")
 
@@ -136,6 +147,7 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
     "DEFAULT_PAGINATION_CLASS": "apps.common.pagination.BoundedPageNumberPagination",
     "DEFAULT_THROTTLE_CLASSES": [],
+    "DEFAULT_THROTTLE_RATES": {"incident-summary": "5/hour"},
     "EXCEPTION_HANDLER": "apps.common.exceptions.api_exception_handler",
 }
 EVENT_MAX_REQUEST_BYTES = 262_144
@@ -170,6 +182,35 @@ CLICKHOUSE_PASSWORD = env("CLICKHOUSE_PASSWORD")
 CLICKHOUSE_SECURE = env("CLICKHOUSE_SECURE")
 CLICKHOUSE_CONNECT_TIMEOUT = env("CLICKHOUSE_CONNECT_TIMEOUT")
 CLICKHOUSE_SEND_RECEIVE_TIMEOUT = env("CLICKHOUSE_SEND_RECEIVE_TIMEOUT")
+INCIDENT_LLM_PROVIDER = env("INCIDENT_LLM_PROVIDER").lower()
+OPENAI_API_KEY = env("OPENAI_API_KEY")
+OPENAI_MODEL = env("OPENAI_MODEL")
+GEMINI_API_KEY = env("GEMINI_API_KEY")
+GEMINI_MODEL = env("GEMINI_MODEL")
+GEMINI_FALLBACK_MODEL = env("GEMINI_FALLBACK_MODEL")
+INCIDENT_LLM_TIMEOUT_SECONDS = env("INCIDENT_LLM_TIMEOUT_SECONDS")
+INCIDENT_LLM_MAX_OUTPUT_TOKENS = env("INCIDENT_LLM_MAX_OUTPUT_TOKENS")
+INCIDENT_LLM_MAX_ATTEMPTS = env("INCIDENT_LLM_MAX_ATTEMPTS")
+INCIDENT_LLM_RETRY_DELAY_SECONDS = env("INCIDENT_LLM_RETRY_DELAY_SECONDS")
+INCIDENT_SUMMARY_RATE_LIMIT = env("INCIDENT_SUMMARY_RATE_LIMIT")
+if not 1 <= INCIDENT_LLM_TIMEOUT_SECONDS <= 60:
+    raise RuntimeError("INCIDENT_LLM_TIMEOUT_SECONDS must be between 1 and 60")
+if not 1 <= INCIDENT_LLM_MAX_OUTPUT_TOKENS <= 4000:
+    raise RuntimeError("INCIDENT_LLM_MAX_OUTPUT_TOKENS must be between 1 and 4000")
+if not 1 <= INCIDENT_LLM_MAX_ATTEMPTS <= 3:
+    raise RuntimeError("INCIDENT_LLM_MAX_ATTEMPTS must be between 1 and 3")
+if not 0 <= INCIDENT_LLM_RETRY_DELAY_SECONDS <= 2:
+    raise RuntimeError("INCIDENT_LLM_RETRY_DELAY_SECONDS must be between 0 and 2")
+if not 1 <= INCIDENT_SUMMARY_RATE_LIMIT <= 100:
+    raise RuntimeError("INCIDENT_SUMMARY_RATE_LIMIT must be between 1 and 100")
+incident_retry_budget = INCIDENT_LLM_TIMEOUT_SECONDS * INCIDENT_LLM_MAX_ATTEMPTS + sum(
+    min(INCIDENT_LLM_RETRY_DELAY_SECONDS * (2**attempt), 2.0)
+    for attempt in range(INCIDENT_LLM_MAX_ATTEMPTS - 1)
+)
+if incident_retry_budget > 100:
+    raise RuntimeError(
+        "Configured incident provider timeout and retry budget must not exceed 100 seconds"
+    )
 ANALYTICS_RETRY_MAX_SECONDS = 30
 OUTBOX_RETRY_BASE_SECONDS = 2
 OUTBOX_RETRY_MAX_SECONDS = 300
