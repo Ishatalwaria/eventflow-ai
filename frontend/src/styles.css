@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 220 25% 97%;
+  --foreground: 222 35% 12%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 35% 12%;
+  --primary: 221 83% 53%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 210 40% 96%;
+  --secondary-foreground: 222 30% 20%;
+  --muted: 210 40% 96%;
+  --muted-foreground: 215 16% 47%;
+  --accent: 210 40% 96%;
+  --accent-foreground: 222 30% 20%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 214 28% 90%;
+  --input: 214 28% 88%;
+  --ring: 221 83% 53%;
+  --radius: 0.65rem;
+}
+
+* { box-sizing: border-box; }
+html { min-width: 320px; scroll-behavior: smooth; }
+body { margin: 0; background: hsl(var(--background)); font-family: "DM Sans", ui-sans-serif, system-ui, sans-serif; font-feature-settings: "ss01" on; -webkit-font-smoothing: antialiased; }
+h1, h2, h3, h4 { font-family: "Manrope", "DM Sans", ui-sans-serif, system-ui, sans-serif; }
+button, input, textarea, select { font: inherit; }
+::selection { background: rgb(191 219 254); color: rgb(30 58 138); }
+
+.bg-sidebar { background: #0d1628; }
+.data-table { width: 100%; min-width: max-content; border-collapse: collapse; text-align: left; white-space: nowrap; font-size: 12px; }
+.data-table thead { background: #f8fafc; color: #64748b; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.data-table th { padding: 12px 16px; }
+.data-table td { border-top: 1px solid #f1f5f9; padding: 13px 16px; color: #475569; }
+.data-table th, .data-table td { max-width: 320px; }
+.data-table td { overflow: hidden; text-overflow: ellipsis; }
+.table-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; }
+.data-table tbody tr { transition: background-color .15s ease; }
+.data-table tbody tr:hover { background: #f8fafc; }
+.animate-in { animation: fadeIn .16s ease-out; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}

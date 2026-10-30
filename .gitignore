@@ -3,6 +3,9 @@
 !.env.example
 .venv*/
 venv/
+node_modules/
+frontend/dist/
+*.tsbuildinfo
 __pycache__/
 *.py[cod]
 *.sqlite3
