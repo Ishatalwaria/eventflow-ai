@@ -6,6 +6,8 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from apps.analytics.sink import ClickHouseLifecycleSink
+from apps.common.metrics import start_background_metrics_server
+from apps.common.observability import ANALYTICS_DELIVERIES, bind_log_context
 from apps.processing.adapters.kafka import ConfluentKafkaConsumer
 from apps.processing.contracts import decode_message
 from apps.processing.topology import ANALYTICS_CONSUMER_GROUP, LIFECYCLE_TOPIC
@@ -15,8 +17,20 @@ logger = logging.getLogger(__name__)
 
 def project_record(record, *, sink, consumer):
     event = decode_message(record.value, lifecycle=True)
-    sink.write(event)
-    consumer.commit(record)
+    try:
+        with bind_log_context(
+            request_id=event.get("request_id"),
+            trace_id=event.get("request_id"),
+            event_id=event.get("event_id"),
+            workflow_id=event.get("workflow_id"),
+            correlation_id=event.get("correlation_id"),
+        ):
+            sink.write(event)
+            consumer.commit(record)
+    except Exception:
+        ANALYTICS_DELIVERIES.labels(result="error").inc()
+        raise
+    ANALYTICS_DELIVERIES.labels(result="confirmed").inc()
 
 
 class Command(BaseCommand):
@@ -28,6 +42,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        start_background_metrics_server()
         stop = threading.Event()
         previous_handlers = {}
 

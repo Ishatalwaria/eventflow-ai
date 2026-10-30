@@ -4,17 +4,18 @@ EventFlow AI is an event-driven workflow and operational intelligence platform. 
 
 ## Requirements
 
-- Python 3.12 (the Docker image uses the current patched Python 3.12 slim image)
+- Python 3.12 (the Docker image uses a patched Python 3.12 slim image)
+- uv 0.13.6 for the locked local and container dependencies
 - Docker Engine and Docker Compose v2 for the containerized setup
 
 ## Local setup
 
 1. Create and activate a Python 3.12 virtual environment.
 2. If `.env` does not exist, copy `.env.example` to `.env`; otherwise merge any missing variables without overwriting your existing values. Set unique local values for `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`, and `RABBITMQ_PASSWORD`. Keep the database password in `DATABASE_URL` in sync with `POSTGRES_PASSWORD`; percent-encode reserved characters in the URL password.
-3. Install the application and development tools:
+3. Install the locked application and development tools:
 
    ```sh
-   python -m pip install -e ".[dev]"
+   uv sync --frozen --extra dev
    ```
 
 4. Start PostgreSQL, Kafka, RabbitMQ, the API, and workers. Compose applies migrations before starting the API and worker processes:
@@ -23,7 +24,7 @@ EventFlow AI is an event-driven workflow and operational intelligence platform. 
    docker compose up -d --build
    ```
 
-The API is available at `http://localhost:8000`. Interactive OpenAPI documentation is at `/api/docs/`; the raw schema is at `/api/schema/`. For a host-run development server instead of the Compose API, stop the Compose API service first, then use `python manage.py runserver`.
+The API is available at `http://localhost:8000`. Interactive OpenAPI documentation is at `/api/docs/`; the raw schema is at `/api/schema/`. For a host-run development server instead of the Compose API, stop the Compose API service first, then use `uv run --frozen --extra dev python manage.py runserver`.
 
 ## API client credentials
 
@@ -141,6 +142,14 @@ The workflow state is supported by `workflow:timeout`; the timeout pattern by th
 
 - `GET /health/live` returns `200 {"status":"ok"}` when the process can serve requests. It does not query PostgreSQL.
 - `GET /health/ready` runs a short-timeout PostgreSQL query and returns `200 {"status":"ready","checks":{"database":"ok"}}` when available, or `503 {"status":"not_ready","checks":{"database":"unavailable"}}` otherwise.
+
+## M5 observability and operations
+
+JSON logs include request/trace, event, workflow, and correlation IDs when available. The request ID is propagated through the PostgreSQL outbox, Kafka event, RabbitMQ task, and lifecycle message; older messages without this optional field remain accepted. `X-Trace-ID` is a cross-service correlation ID, not an exported OpenTelemetry span.
+
+`GET /metrics` exposes Prometheus text metrics for HTTP traffic, outbox backlog, workflow attempts/retries/dead letters, RabbitMQ ready-queue depth, analytics delivery, and incident-provider latency/errors. Queue depth is sampled by the worker and reports `-1` when unavailable. Compose exposes worker metrics on localhost ports 9101–9104. Set `METRICS_TOKEN` in production; the endpoint requires it in `X-Metrics-Token`. Production settings refuse to start without a metrics token of at least 32 characters.
+
+Dependencies are pinned in `uv.lock`; Docker and CI use `uv sync --frozen`. CI runs Ruff, Django/migration checks, unit/API tests, PostgreSQL concurrency and broker/ClickHouse integration tests, `pip-audit`, and a Trivy image scan. See [the security checklist](docs/security-checklist.md) and [operations runbook](docs/operations-runbook.md) for least-privilege review, metrics interpretation, recovery steps, and the five failure drills.
 
 ## Developer checks
 

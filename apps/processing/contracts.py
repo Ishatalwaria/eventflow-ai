@@ -39,6 +39,11 @@ def _validate_envelope(value, *, required):
         or not isinstance(value.get("payload"), dict)
     ):
         raise ContractError("Message schema version or payload is invalid.")
+    request_id = value.get("request_id")
+    if request_id is not None and (
+        not isinstance(request_id, str) or not 1 <= len(request_id) <= 64
+    ):
+        raise ContractError("Message request ID is invalid.")
 
 
 def validate_domain_event(value):
@@ -56,6 +61,11 @@ def validate_domain_event(value):
     )
     if value["event_type"] != DOMAIN_EVENT_TYPE:
         raise ContractError("Unsupported domain event type.")
+    if "workflow_id" in value:
+        try:
+            uuid.UUID(str(value["workflow_id"]))
+        except (TypeError, ValueError):
+            raise ContractError("Domain event workflow ID is invalid.") from None
     payload = value["payload"]
     if (
         not isinstance(payload.get("order_id"), str)
@@ -162,6 +172,8 @@ def make_workflow_task(domain_event, workflow_id, attempt_number=1):
         "attempt_number": attempt_number,
         "payload": domain_event["payload"],
     }
+    if domain_event.get("request_id"):
+        task["request_id"] = domain_event["request_id"]
     if len(json.dumps(task, separators=(",", ":")).encode("utf-8")) > MAX_MESSAGE_BYTES:
         raise ContractError("Task exceeds the configured size limit.")
     return task
@@ -197,6 +209,11 @@ def validate_workflow_task(value):
         or not isinstance(value["payload"], dict)
     ):
         raise ContractError("Task fields are invalid.")
+    request_id = value.get("request_id")
+    if request_id is not None and (
+        not isinstance(request_id, str) or not 1 <= len(request_id) <= 64
+    ):
+        raise ContractError("Task request ID is invalid.")
 
 
 def encode_task(task):

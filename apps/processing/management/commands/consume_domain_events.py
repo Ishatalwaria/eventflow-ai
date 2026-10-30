@@ -6,6 +6,8 @@ import time
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
+from apps.common.metrics import start_background_metrics_server
+from apps.common.observability import BROKER_OPERATIONS
 from apps.processing.adapters.kafka import ConfluentKafkaConsumer
 from apps.processing.adapters.rabbitmq import PikaRabbitAdapter
 from apps.processing.pipeline import forward_kafka_record, rabbit_connection_settings
@@ -20,6 +22,7 @@ class Command(BaseCommand):
         parser.add_argument("--once", action="store_true", help="Forward one record and exit.")
 
     def handle(self, *args, **options):
+        start_background_metrics_server()
         stop_event = threading.Event()
         old_handlers = {}
 
@@ -61,6 +64,9 @@ class Command(BaseCommand):
                 except KeyboardInterrupt:
                     stop_event.set()
                 except Exception as exc:
+                    BROKER_OPERATIONS.labels(
+                        broker="kafka_rabbitmq", operation="forward", result="error"
+                    ).inc()
                     logger.warning(
                         "Kafka-to-Rabbit connection loop failed error_type=%s retry_seconds=%s",
                         type(exc).__name__,

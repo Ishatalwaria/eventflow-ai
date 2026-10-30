@@ -1,0 +1,181 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Lint, API/unit tests, dependency audit
+    runs-on: ubuntu-latest
+    env:
+      DJANGO_SETTINGS_MODULE: config.settings.test
+      DJANGO_SECRET_KEY: ci-only-not-a-secret
+      POSTGRES_PASSWORD: ci-only-not-a-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          version: 0.13.6
+          python-version: "3.12"
+          enable-cache: true
+      - name: Verify lock file
+        run: uv lock --check
+      - name: Install locked development dependencies
+        run: uv sync --frozen --extra dev
+      - name: Ruff
+        run: |
+          uv run --frozen --extra dev ruff check .
+          uv run --frozen --extra dev ruff format --check .
+      - name: Django and migrations checks
+        run: |
+          uv run --frozen --extra dev python -m django check --settings=config.settings.test
+          uv run --frozen --extra dev python -m django makemigrations --check --dry-run --settings=config.settings.test
+      - name: Unit and API tests
+        run: uv run --frozen --extra dev pytest -q
+      - name: Dependency vulnerability audit
+        run: |
+          uv export --frozen --extra dev --no-emit-project --format requirements-txt \
+            --output-file "$RUNNER_TEMP/eventflow-audit-requirements.txt"
+          uv run --frozen --extra dev pip-audit --strict \
+            --requirement "$RUNNER_TEMP/eventflow-audit-requirements.txt"
+
+  integration:
+    name: PostgreSQL and broker/analytics integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.6-bookworm
+        env:
+          POSTGRES_DB: eventflow
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d eventflow"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+      kafka:
+        image: apache/kafka:4.3.2
+        env:
+          KAFKA_NODE_ID: 1
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+          KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+        ports:
+          - 9092:9092
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+      rabbitmq:
+        image: rabbitmq:4.2-management
+        env:
+          RABBITMQ_DEFAULT_USER: eventflow-ci
+          RABBITMQ_DEFAULT_PASS: eventflow-ci-password
+          RABBITMQ_DEFAULT_VHOST: /
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.12
+        env:
+          CLICKHOUSE_DB: eventflow
+          CLICKHOUSE_USER: eventflow-ci
+          CLICKHOUSE_PASSWORD: eventflow-ci-password
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+        ports:
+          - 8123:8123
+        options: >-
+          --health-cmd "clickhouse-client --user eventflow-ci --password eventflow-ci-password --query 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DJANGO_SETTINGS_MODULE: config.settings.test
+      DJANGO_SECRET_KEY: ci-only-not-a-secret
+      POSTGRES_DB: eventflow
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+      RABBITMQ_HOST: localhost
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: eventflow-ci
+      RABBITMQ_PASSWORD: eventflow-ci-password
+      CLICKHOUSE_HOST: localhost
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DATABASE: eventflow
+      CLICKHOUSE_USERNAME: eventflow-ci
+      CLICKHOUSE_PASSWORD: eventflow-ci-password
+      EVENTFLOW_RUN_BROKER_INTEGRATION: "1"
+      EVENTFLOW_RUN_CLICKHOUSE_INTEGRATION: "1"
+      EVENTFLOW_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/eventflow_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          version: 0.13.6
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install locked development dependencies
+        run: uv sync --frozen --extra dev
+      - name: Create Kafka integration topic
+        run: >-
+          docker exec "${{ job.services.kafka.id }}"
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092
+          --create --if-not-exists --topic eventflow.integration.events.v1
+          --partitions 1 --replication-factor 1
+      - name: Initialize ClickHouse analytics table
+        run: |
+          SQL="$(cat docker/clickhouse/init/001-workflow-lifecycle.sql)"
+          docker exec "${{ job.services.clickhouse.id }}" clickhouse-client \
+            --user eventflow-ci --password eventflow-ci-password \
+            --multiquery --query "$SQL"
+      - name: PostgreSQL concurrency test
+        run: >-
+          uv run --frozen --extra dev pytest
+          --ds=config.settings.postgres_integration
+          apps/events/tests/test_events_api.py -k concurrent_duplicate -q
+      - name: Real Kafka, RabbitMQ, and ClickHouse integration tests
+        run: uv run --frozen --extra dev pytest -m integration -q
+
+  container-scan:
+    name: Build and scan container
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build application image
+        run: docker build --pull --tag eventflow-ai:ci .
+      - name: Scan image for OS and library vulnerabilities
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: eventflow-ai:ci
+          format: table
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"

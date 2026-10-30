@@ -10,6 +10,9 @@ env = environ.Env(
     DATABASE_STATEMENT_TIMEOUT_MS=(int, 3000),
     DATABASE_CONN_MAX_AGE=(int, 60),
     LOG_LEVEL=(str, "INFO"),
+    METRICS_TOKEN=(str, ""),
+    METRICS_PORT=(int, 0),
+    PROMETHEUS_MULTIPROC_DIR=(str, ""),
     KAFKA_BOOTSTRAP_SERVERS=(str, "127.0.0.1:29092"),
     KAFKA_CONSUMER_GROUP=(str, "eventflow.kafka-to-rabbit.v1"),
     KAFKA_SECURITY_PROTOCOL=(str, "PLAINTEXT"),
@@ -228,3 +231,6 @@ LOGGING = {
     "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "structured"}},
     "root": {"handlers": ["console"], "level": env("LOG_LEVEL")},
 }
+METRICS_TOKEN = env("METRICS_TOKEN")
+METRICS_PORT = env("METRICS_PORT")
+PROMETHEUS_MULTIPROC_DIR = env("PROMETHEUS_MULTIPROC_DIR")

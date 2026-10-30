@@ -1,6 +1,7 @@
 import pytest
 from django.test import override_settings
 
+from apps.common.observability import WORKFLOW_ATTEMPTS
 from apps.processing.models import OutboxMessage, ProcessingLog
 from apps.processing.workflow_service import (
     TransientProcessingError,
@@ -38,6 +39,19 @@ def test_success_records_attempt_logs_and_lifecycle_outbox_atomically():
         "workflow.processing",
         "workflow.succeeded",
     }
+
+
+@pytest.mark.django_db(transaction=True)
+def test_successful_attempt_metric_increments_only_after_commit():
+    _event, workflow, task = create_workflow()
+    counter = WORKFLOW_ATTEMPTS.labels(stage="order_validation", outcome="SUCCEEDED")
+    before = counter._value.get()
+
+    process_workflow_task(task)
+
+    assert counter._value.get() == before + 1
+    workflow.refresh_from_db()
+    assert workflow.state == Workflow.State.SUCCEEDED
 
 
 def test_transient_failure_retries_once_then_succeeds():

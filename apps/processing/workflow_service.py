@@ -7,6 +7,12 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from apps.common.observability import (
+    WORKFLOW_ATTEMPTS,
+    WORKFLOW_DEAD_LETTERS,
+    WORKFLOW_RETRIES,
+    bind_log_context,
+)
 from apps.workflows.models import Workflow, WorkflowAttempt
 
 from .contracts import validate_workflow_task
@@ -89,6 +95,7 @@ def _record_lifecycle(workflow, event_type, attempt_number, *, error_code="", du
         dedupe_key=f"workflow:{workflow.id}:{attempt_number}:{event_type}",
         payload={
             "event_id": str(workflow.event_id),
+            "request_id": workflow.event.request_id,
             "workflow_id": str(workflow.id),
             "event_type": event_type,
             "schema_version": 1,
@@ -149,6 +156,17 @@ def _decision_for_existing(task, attempt):
 def process_workflow_task(task, *, inventory_checker=None):
     """Persist an idempotent stage outcome and lifecycle outbox in one transaction."""
     validate_workflow_task(task)
+    with bind_log_context(
+        request_id=task.get("request_id"),
+        trace_id=task.get("request_id"),
+        event_id=task.get("event_id"),
+        workflow_id=task.get("workflow_id"),
+        correlation_id=task.get("correlation_id"),
+    ):
+        return _process_validated_task(task, inventory_checker=inventory_checker)
+
+
+def _process_validated_task(task, *, inventory_checker=None):
     inventory_checker = inventory_checker or SimulatedInventoryChecker()
     attempt_number = task["attempt_number"]
     started = time.monotonic()
@@ -279,6 +297,17 @@ def process_workflow_task(task, *, inventory_checker=None):
         if action == "RETRY":
             retry_task["attempt_number"] = attempt_number + 1
             retry_task["task_id"] = f"{workflow.id}:{STAGE}:{attempt_number + 1}"
+
+        def record_attempt_metrics(
+            stage=STAGE, result=outcome, action_taken=action, code=error_code
+        ):
+            WORKFLOW_ATTEMPTS.labels(stage=stage, outcome=result).inc()
+            if action_taken == "RETRY":
+                WORKFLOW_RETRIES.labels(stage=stage).inc()
+            if action_taken == "DEAD_LETTER":
+                WORKFLOW_DEAD_LETTERS.labels(stage=stage, error_code=code or "UNSPECIFIED").inc()
+
+        transaction.on_commit(record_attempt_metrics)
 
         return ProcessingDecision(
             action,

@@ -1,3 +1,4 @@
+from apps.common.metrics import MetricsView
 from django.contrib import admin
 from django.urls import include, path, reverse_lazy
 from django.views.generic import RedirectView
@@ -11,6 +12,7 @@ urlpatterns = [
     ),
     path("admin/", admin.site.urls),
     path("health/", include("apps.common.urls")),
+    path("metrics", MetricsView.as_view(), name="metrics"),
     path("api/v1/", include("apps.events.urls")),
     path("api/v1/", include("apps.workflows.urls")),
     path("api/v1/", include("apps.incidents.urls")),

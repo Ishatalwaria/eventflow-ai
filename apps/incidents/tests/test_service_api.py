@@ -135,6 +135,9 @@ def test_transient_provider_failure_returns_safe_diagnostic_code(client_and_work
     assert response.data["error"]["details"]["detail"] == (
         "Incident analysis is temporarily unavailable."
     )
+    workflow.refresh_from_db()
+    assert workflow.state == Workflow.State.FAILED
+    assert IncidentSummary.objects.count() == 0
 
 
 def test_throttle_response_explains_retry_wait(client_and_workflow, monkeypatch):

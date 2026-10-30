@@ -10,6 +10,8 @@ if not SECRET_KEY:  # noqa: F405
     raise RuntimeError("DJANGO_SECRET_KEY must be set in production")
 if len(SECRET_KEY) < 50 or "local-only" in SECRET_KEY:  # noqa: F405
     raise RuntimeError("DJANGO_SECRET_KEY must be a unique, strong production secret")
+if len(METRICS_TOKEN) < 32:  # noqa: F405
+    raise RuntimeError("METRICS_TOKEN must be set to a unique secret of at least 32 characters")
 if not ALLOWED_HOSTS or "*" in ALLOWED_HOSTS:  # noqa: F405
     raise RuntimeError("ALLOWED_HOSTS must contain explicit production hostnames")
 

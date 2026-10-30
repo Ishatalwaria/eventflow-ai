@@ -12,6 +12,8 @@ x-eventflow-environment: &eventflow-environment
   DATABASE_STATEMENT_TIMEOUT_MS: ${DATABASE_STATEMENT_TIMEOUT_MS:-3000}
   DATABASE_CONN_MAX_AGE: ${DATABASE_CONN_MAX_AGE:-60}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  METRICS_TOKEN: ${METRICS_TOKEN:-}
+  METRICS_PORT: 9100
   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
   KAFKA_SECURITY_PROTOCOL: PLAINTEXT
   KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-eventflow.kafka-to-rabbit.v1}
@@ -39,6 +41,7 @@ x-eventflow-environment: &eventflow-environment
   OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
   GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.8-flash}
+  GEMINI_FALLBACK_MODEL: ${GEMINI_FALLBACK_MODEL:-gemini-3.5-flash-lite}
   INCIDENT_LLM_TIMEOUT_SECONDS: ${INCIDENT_LLM_TIMEOUT_SECONDS:-45}
   INCIDENT_LLM_MAX_OUTPUT_TOKENS: ${INCIDENT_LLM_MAX_OUTPUT_TOKENS:-1200}
   INCIDENT_LLM_MAX_ATTEMPTS: ${INCIDENT_LLM_MAX_ATTEMPTS:-2}
@@ -79,6 +82,9 @@ services:
 
   api:
     <<: *eventflow-app
+    environment:
+      <<: *eventflow-environment
+      PROMETHEUS_MULTIPROC_DIR: /tmp/eventflow-prometheus
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -164,6 +170,10 @@ services:
   outbox-publisher:
     <<: *eventflow-app
     command: ["python", "manage.py", "publish_outbox"]
+    healthcheck:
+      disable: true
+    ports:
+      - "127.0.0.1:9101:9100"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -173,6 +183,10 @@ services:
   kafka-consumer:
     <<: *eventflow-app
     command: ["python", "manage.py", "consume_domain_events"]
+    healthcheck:
+      disable: true
+    ports:
+      - "127.0.0.1:9102:9100"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -184,6 +198,10 @@ services:
   workflow-worker:
     <<: *eventflow-app
     command: ["python", "manage.py", "process_workflows"]
+    healthcheck:
+      disable: true
+    ports:
+      - "127.0.0.1:9103:9100"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -193,6 +211,10 @@ services:
   analytics-consumer:
     <<: *eventflow-app
     command: ["python", "manage.py", "consume_lifecycle_analytics"]
+    healthcheck:
+      disable: true
+    ports:
+      - "127.0.0.1:9104:9100"
     depends_on:
       migrate:
         condition: service_completed_successfully

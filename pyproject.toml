@@ -18,14 +18,19 @@ dependencies = [
     "confluent-kafka>=2.12,<3",
     "pika>=1.4,<2",
     "clickhouse-connect>=0.9,<1",
+    "prometheus-client==0.26.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.3,<9",
+    "pytest>=9.0.3,<10",
     "pytest-django>=4.11,<5",
     "ruff>=0.14,<1",
+    "pip-audit==2.9.0",
 ]
+
+[tool.uv]
+required-version = "==0.13.6"
 
 [tool.setuptools.packages.find]
 include = ["config*", "apps*"]

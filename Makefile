@@ -1,26 +1,29 @@
 .PHONY: install run test lint format check migrate compose-up compose-down
 
 install:
-	python -m pip install -e ".[dev]"
+	uv sync --frozen --extra dev
 
 run:
 	python manage.py runserver 0.0.0.0:8000
 
 test:
-	pytest
+	uv run --frozen --extra dev pytest
 
 lint:
-	ruff check .
-	ruff format --check .
+	uv run --frozen --extra dev ruff check .
+	uv run --frozen --extra dev ruff format --check .
 
 format:
 	ruff check --fix .
 	ruff format .
 
 check:
-	python manage.py check
-	pytest
-	ruff check .
+	uv run --frozen --extra dev python manage.py check
+	uv run --frozen --extra dev pytest
+	uv run --frozen --extra dev ruff check .
+
+audit:
+	uv run --frozen --extra dev pip-audit --strict
 
 migrate:
 	python manage.py migrate

@@ -2,9 +2,11 @@ import base64
 import hashlib
 import json
 import ssl
+import time
 
 import pika
 
+from apps.common.observability import RABBIT_QUEUE_MESSAGES
 from apps.processing.contracts import MAX_MESSAGE_BYTES, encode_task
 from apps.processing.ports import RabbitTaskPublisher
 from apps.processing.topology import (
@@ -198,11 +200,32 @@ class PikaRabbitAdapter(RabbitTaskPublisher):
             handler(RabbitDelivery(channel, method, body))
 
         self.channel.basic_consume(queue=TASK_QUEUE, on_message_callback=on_message, auto_ack=False)
+        last_depth_sample = 0.0
+        queues = [
+            TASK_QUEUE,
+            *(f"eventflow.tasks.{route}.q" for route in RETRY_ROUTES),
+            DEAD_QUEUE,
+        ]
         while not should_stop() and self.connection.is_open and self.channel.is_open:
             self.connection.process_data_events(time_limit=0.5)
+            now = time.monotonic()
+            if now - last_depth_sample >= 15:
+                for queue in queues:
+                    try:
+                        result = self.channel.queue_declare(queue=queue, passive=True)
+                        RABBIT_QUEUE_MESSAGES.labels(queue=queue).set(result.method.message_count)
+                    except pika.exceptions.AMQPError:
+                        RABBIT_QUEUE_MESSAGES.labels(queue=queue).set(-1)
+                last_depth_sample = now
         if self.channel.is_open:
             self.channel.stop_consuming()
 
     def close(self):
+        for queue in (
+            TASK_QUEUE,
+            *(f"eventflow.tasks.{route}.q" for route in RETRY_ROUTES),
+            DEAD_QUEUE,
+        ):
+            RABBIT_QUEUE_MESSAGES.labels(queue=queue).set(-1)
         if self.connection.is_open:
             self.connection.close()

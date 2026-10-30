@@ -5,6 +5,8 @@ import time
 
 from django.core.management.base import BaseCommand
 
+from apps.common.metrics import start_background_metrics_server
+from apps.common.observability import BROKER_OPERATIONS
 from apps.processing.adapters.rabbitmq import PikaRabbitAdapter
 from apps.processing.pipeline import process_rabbit_delivery, rabbit_connection_settings
 
@@ -15,6 +17,7 @@ class Command(BaseCommand):
     help = "Consume durable RabbitMQ workflow tasks and record workflow outcomes."
 
     def handle(self, *args, **options):
+        start_background_metrics_server()
         stop_event = threading.Event()
         old_handlers = {}
 
@@ -40,6 +43,9 @@ class Command(BaseCommand):
                 except KeyboardInterrupt:
                     stop_event.set()
                 except Exception as exc:
+                    BROKER_OPERATIONS.labels(
+                        broker="rabbitmq", operation="consume", result="error"
+                    ).inc()
                     # The unacked delivery is recovered when this connection closes.
                     logger.warning(
                         "Workflow worker connection loop failed error_type=%s retry_seconds=%s",
