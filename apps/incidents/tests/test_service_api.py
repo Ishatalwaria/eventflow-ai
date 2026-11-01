@@ -41,6 +41,20 @@ def client_and_workflow():
     return api_client, credential, workflow
 
 
+def make_summary(workflow, requested_by, headline):
+    return IncidentSummary.objects.create(
+        workflow=workflow,
+        requested_by=requested_by,
+        evidence_hash="a" * 64,
+        evidence={"workflow_id": str(workflow.pk), "evidence": []},
+        summary={"headline": headline},
+        prompt_version="test-v1",
+        provider="test-provider",
+        model="test-model",
+        latency_ms=1,
+    )
+
+
 def test_summary_endpoint_authenticates_and_persists_evidence_and_provider_metadata(
     client_and_workflow,
 ):
@@ -63,6 +77,57 @@ def test_summary_endpoint_authenticates_and_persists_evidence_and_provider_metad
     assert saved.requested_by_id == api_client.pk
     assert "not-for-evidence" not in str(saved.evidence)
     assert saved.prompt_version
+
+
+def test_saved_incidents_can_be_listed_filtered_paginated_and_retrieved(client_and_workflow):
+    api_client, credential, failed = client_and_workflow
+    second_failed = make_workflow(api_client, key="incident-api-second")
+    dead_lettered = make_workflow(
+        api_client, state=Workflow.State.DEAD_LETTERED, key="incident-api-dlq"
+    )
+    summaries = [
+        make_summary(failed, api_client, "First order failure"),
+        make_summary(second_failed, api_client, "Inventory dependency timeout"),
+        make_summary(dead_lettered, api_client, "Dead letter order failure"),
+    ]
+    headers = {"HTTP_AUTHORIZATION": f"Bearer {api_client.pk}.{credential}"}
+
+    page = RestClient().get("/api/v1/incidents?page_size=2&page=2", **headers)
+    filtered = RestClient().get(
+        "/api/v1/incidents?search=dependency&workflow_state=FAILED", **headers
+    )
+    detail = RestClient().get(f"/api/v1/incidents/{summaries[1].pk}", **headers)
+
+    assert page.status_code == 200
+    assert page.data["count"] == 3
+    assert len(page.data["results"]) == 1
+    assert "evidence" not in page.data["results"][0]
+    assert filtered.status_code == 200
+    assert filtered.data["count"] == 1
+    assert filtered.data["results"][0]["headline"] == "Inventory dependency timeout"
+    assert detail.status_code == 200
+    assert detail.data["summary"]["headline"] == "Inventory dependency timeout"
+    assert detail.data["evidence"]["workflow_id"] == str(second_failed.pk)
+
+
+def test_saved_incident_reads_are_authenticated_and_tenant_scoped(client_and_workflow):
+    api_client, credential, workflow = client_and_workflow
+    summary = make_summary(workflow, api_client, "Private incident")
+    other = APIClient.objects.create(name="other", secret_hash=make_password("other-token"))
+
+    unauthenticated = RestClient().get("/api/v1/incidents")
+    other_list = RestClient().get(
+        "/api/v1/incidents", HTTP_AUTHORIZATION=f"Bearer {other.pk}.other-token"
+    )
+    other_detail = RestClient().get(
+        f"/api/v1/incidents/{summary.pk}",
+        HTTP_AUTHORIZATION=f"Bearer {other.pk}.other-token",
+    )
+
+    assert unauthenticated.status_code == 401
+    assert other_list.status_code == 200
+    assert other_list.data["count"] == 0
+    assert other_detail.status_code == 404
 
 
 def test_summary_endpoint_requires_authentication(client_and_workflow):

@@ -27,6 +27,7 @@ export default function App() {
       <Route path="workflows" element={<WorkflowsPage />} />
       <Route path="workflows/:workflowId" element={<WorkflowDetailPage />} />
       <Route path="incidents" element={<IncidentsPage />} />
+      <Route path="incidents/id/:incidentId" element={<IncidentInvestigationPage />} />
       <Route path="incidents/workflow/:workflowId" element={<IncidentInvestigationPage />} />
       <Route path="analytics" element={<AnalyticsPage />} />
       <Route path="health" element={<HealthPage />} />

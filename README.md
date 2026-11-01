@@ -26,6 +26,21 @@ EventFlow AI is an event-driven workflow and operational intelligence platform. 
 
 The API is available at `http://localhost:8000`. Interactive OpenAPI documentation is at `/api/docs/`; the raw schema is at `/api/schema/`. For a host-run development server instead of the Compose API, stop the Compose API service first, then use `uv run --frozen --extra dev python manage.py runserver`.
 
+## Frontend dashboard
+
+The React dashboard lives in `frontend/`. From that directory, install the locked packages and start Vite:
+
+```sh
+npm ci
+npm run dev
+```
+
+Set `VITE_API_BASE_URL=http://localhost:8000` in `frontend/.env` when the API uses the default local port. Vite proxies API and health requests during development. Add a client bearer token in Settings; the token exists in browser memory only and is intended for local/demo use. Production user sessions should be mediated by a server-side backend-for-frontend.
+
+Overview data comes from the authenticated tenant summary API and is scoped to the connected API client. Analytics uses the tenant-scoped PostgreSQL current-state report by default. The separate ClickHouse lifecycle report remains system-wide and requires the explicit `can_view_analytics` capability. System Health performs bounded server-side checks and scrapes allowlisted worker metrics with the server-held metrics token; it never sends that token to the browser. See [the frontend API integration map](frontend/docs/API_INTEGRATION_MAP.md) for endpoint contracts and unavailable metrics.
+
+Run frontend checks from `frontend/` with `npm run typecheck`, `npm test`, `npm run build`, and `npm audit --audit-level=high`. These checks are also configured in the frontend CI job.
+
 ## API client credentials
 
 For the API running in Docker Compose, create credentials inside the API container so the credential is written to the same PostgreSQL database that the API uses:
@@ -48,7 +63,7 @@ If running Django directly on the host instead of using the Compose API, use `py
 
 M1 currently accepts the `order.created` event type at schema version `1`. Its payload requires `order_id`, a three-letter uppercase `currency`, non-negative `total_minor_units`, and at least one item with `sku` and positive `quantity`. Timestamps must include a timezone offset. Requests are limited to 256 KiB and batches to 50 events.
 
-Submit an event with `POST /api/v1/events` and `Authorization: Bearer <CLIENT_UUID>.<SECRET>`. A newly accepted event returns `201`; reusing the same client, source, and idempotency key returns `200` with the original event and workflow IDs and `duplicate: true`. The database uniqueness constraint is authoritative, including under concurrent requests.
+Submit an event with `POST /api/v1/events` and `Authorization: Bearer <CLIENT_UUID>.<SECRET>`. A newly accepted event returns `201`; reusing the same client, source, and idempotency key returns `200` with the original event and workflow IDs and `duplicate: true`, even if the replay body has changed. The original event remains unchanged; use a new key for a distinct event. The database uniqueness constraint is authoritative, including under concurrent requests.
 
 `POST /api/v1/events/batch` accepts `{"events": [...]}`. A batch is all-or-nothing: validation or persistence failure rolls back the full batch. Successful batches return each event’s IDs and duplicate flag. The request writes the Kafka handoff into the PostgreSQL outbox in the same transaction. A separate publisher sends it to Kafka after commit.
 

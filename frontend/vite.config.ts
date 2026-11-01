@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => {
         "/api": { target, changeOrigin: true },
         "/health/live": { target, changeOrigin: true },
         "/health/ready": { target, changeOrigin: true },
+        "/health/services": { target, changeOrigin: true },
       },
     },
     test: { environment: "jsdom", setupFiles: "./src/test/setup.ts", restoreMocks: true, clearMocks: true },

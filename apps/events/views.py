@@ -1,13 +1,16 @@
 import logging
+import uuid
 
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema
-from rest_framework import status
+from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.common.authentication import APIClientAuthentication
+from apps.common.pagination import BoundedPageNumberPagination
 from apps.common.parsers import BoundedJSONParser
 from apps.events.contracts import EventBatchSerializer, EventEnvelopeSerializer
 from apps.events.models import Event
@@ -15,6 +18,8 @@ from apps.events.serializers import (
     EventAcceptanceSerializer,
     EventBatchResponseSerializer,
     EventDetailSerializer,
+    EventListQuerySerializer,
+    EventListSerializer,
 )
 from apps.events.services import accept_events
 
@@ -36,7 +41,29 @@ class EventAPIBase(APIView):
     parser_classes = [BoundedJSONParser]
 
 
-class EventCreateView(EventAPIBase):
+class EventBatchCreateView(EventAPIBase):
+    @extend_schema(
+        request=EventBatchSerializer,
+        responses={200: EventBatchResponseSerializer},
+    )
+    def post(self, request):
+        serializer = EventBatchSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        results = accept_events(
+            client=request.user,
+            envelopes=serializer.validated_data["events"],
+            request_id=request.request_id,
+        )
+        return Response({"results": [acceptance_data(result) for result in results]})
+
+
+class EventCollectionView(generics.ListAPIView):
+    authentication_classes = [APIClientAuthentication]
+    permission_classes = [IsAuthenticated]
+    parser_classes = [BoundedJSONParser]
+    serializer_class = EventListSerializer
+    pagination_class = BoundedPageNumberPagination
+
     @extend_schema(
         request=EventEnvelopeSerializer,
         responses={200: EventAcceptanceSerializer, 201: EventAcceptanceSerializer},
@@ -52,21 +79,44 @@ class EventCreateView(EventAPIBase):
         response_status = status.HTTP_200_OK if result.duplicate else status.HTTP_201_CREATED
         return Response(acceptance_data(result), status=response_status)
 
-
-class EventBatchCreateView(EventAPIBase):
-    @extend_schema(
-        request=EventBatchSerializer,
-        responses={200: EventBatchResponseSerializer},
-    )
-    def post(self, request):
-        serializer = EventBatchSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        results = accept_events(
-            client=request.user,
-            envelopes=serializer.validated_data["events"],
-            request_id=request.request_id,
+    def get_queryset(self):
+        return (
+            Event.objects.filter(client=self.request.user)
+            .select_related("workflow")
+            .order_by("-received_at", "-id")
         )
-        return Response({"results": [acceptance_data(result) for result in results]})
+
+    @extend_schema(parameters=[EventListQuerySerializer])
+    def get(self, request, *args, **kwargs):
+        return self.list(request, *args, **kwargs)
+
+    def list(self, request, *args, **kwargs):
+        query = EventListQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        queryset = self.get_queryset()
+        if params.get("event_type"):
+            queryset = queryset.filter(event_type=params["event_type"])
+        if params.get("date_from"):
+            queryset = queryset.filter(received_at__date__gte=params["date_from"])
+        if params.get("date_to"):
+            queryset = queryset.filter(received_at__date__lte=params["date_to"])
+        search = params.get("search", "")
+        if search:
+            search_filter = (
+                Q(event_type__icontains=search)
+                | Q(source__icontains=search)
+                | Q(idempotency_key__icontains=search)
+                | Q(correlation_id__icontains=search)
+            )
+            try:
+                search_filter |= Q(pk=uuid.UUID(search))
+            except ValueError:
+                pass
+            queryset = queryset.filter(search_filter)
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page, many=True)
+        return self.get_paginated_response(serializer.data)
 
 
 class EventDetailView(EventAPIBase):

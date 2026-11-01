@@ -1,26 +1,31 @@
 import { useState } from "react";
 import { ArrowLeft, Bot, CheckCircle2, CircleHelp, Clipboard, Clock3, FlaskConical, ShieldAlert } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
-import { toast } from "sonner";
 import { apiErrorMessage } from "../../api/client";
-import { useCreateIncidentSummary, useEvent, useWorkflow } from "../../api/hooks";
+import { useCreateIncidentSummary, useEvent, useIncidentSummary, useWorkflow } from "../../api/hooks";
 import type { IncidentSummary } from "../../api/types";
 import { useAuth } from "../../app/auth";
 import { EmptyState, ErrorState, LoadingState, PageHeader, SectionTitle, StateBadge } from "../../components/layout";
 import { Badge, Button, Card } from "../../components/ui";
 import { formatDate, formatDuration, sanitizeDiagnosticText } from "../../lib/utils";
+import { copyToClipboard } from "../../lib/clipboard";
 
 export function IncidentInvestigationPage() {
-  const { workflowId = "" } = useParams();
+  const { workflowId: pathWorkflowId = "", incidentId = "" } = useParams();
   const { hasToken } = useAuth();
-  const workflow = useWorkflow(workflowId, hasToken);
+  const persistedSummary = useIncidentSummary(incidentId, hasToken);
+  const workflowId = pathWorkflowId || persistedSummary.data?.workflow_id || "";
+  const workflow = useWorkflow(workflowId, hasToken && (!incidentId || Boolean(persistedSummary.data)));
   const event = useEvent(workflow.data?.event_id ?? "", hasToken && Boolean(workflow.data?.event_id));
   const analysis = useCreateIncidentSummary(workflowId);
   const [selectedEvidence, setSelectedEvidence] = useState<string | null>(null);
-  const summary = analysis.data;
-  const copy = async (value: string) => { try { await navigator.clipboard.writeText(value); toast.success("ID copied."); } catch { toast.error("Clipboard access is unavailable."); } };
+  const isPersisted = Boolean(incidentId);
+  const summary = isPersisted ? persistedSummary.data : analysis.data;
+  const copy = async (value: string) => { await copyToClipboard(value, "ID copied."); };
 
   if (!hasToken) return <><PageHeader title="Incident investigation" /><Card><EmptyState title="API connection required" description="Connect a client token in Settings to investigate workflow failures." /></Card></>;
+  if (isPersisted && persistedSummary.isLoading) return <><PageHeader title="Saved incident" /><Card><LoadingState label="Loading saved incident…" /></Card></>;
+  if (isPersisted && (persistedSummary.isError || !persistedSummary.data)) return <><PageHeader title="Saved incident" /><ErrorState title="Saved incident unavailable" description={apiErrorMessage(persistedSummary.error)} onRetry={() => void persistedSummary.refetch()} /></>;
   if (workflow.isLoading) return <><PageHeader title="Incident investigation" /><Card><LoadingState label="Loading workflow evidence…" /></Card></>;
   if (workflow.isError || !workflow.data) return <><PageHeader title="Incident investigation" /><ErrorState description={apiErrorMessage(workflow.error)} onRetry={() => void workflow.refetch()} /></>;
 
@@ -31,11 +36,11 @@ export function IncidentInvestigationPage() {
   const showReferencedEvidence = (ids: string[]) => <div className="mt-2 flex flex-wrap gap-1.5">{ids.map((id) => <button key={id} onClick={() => setSelectedEvidence(id)} className="rounded bg-slate-100 px-2 py-1 font-mono text-[10px] text-blue-700 hover:bg-blue-100">{id}</button>)}</div>;
 
   return <>
-    <PageHeader eyebrow="AI incident intelligence" title={summary?.summary.headline ?? "Incident investigation"} description="Review workflow evidence and request an evidence-grounded analysis. Suggestions are not executed automatically." actions={<><Button size="sm" variant="outline" asChild><Link to="/incidents"><ArrowLeft size={14} />Eligible failures</Link></Button><Button size="sm" variant="outline" asChild><Link to={`/workflows/${workflow.data.id}`}>Workflow details</Link></Button></>} />
+    <PageHeader eyebrow="AI incident intelligence" title={summary?.summary.headline ?? "Incident investigation"} description={isPersisted ? "Review this saved, evidence-grounded analysis and its supporting records." : "Review workflow evidence and request an evidence-grounded analysis. Suggestions are not executed automatically."} actions={<><Button size="sm" variant="outline" asChild><Link to="/incidents"><ArrowLeft size={14} />Incident history</Link></Button><Button size="sm" variant="outline" asChild><Link to={`/workflows/${workflow.data.id}`}>Workflow details</Link></Button></>} />
     <div className="mb-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><Meta label="Workflow" value={workflow.data.id} copy={() => void copy(workflow.data!.id)} /><Meta label="Related event" value={workflow.data.event_id} href={`/events/${workflow.data.event_id}`} /><Meta label="Failed stage" value={workflow.data.current_stage.replaceAll("_", " ")} /><Meta label="Workflow updated" value={formatDate(workflow.data.updated_at)} /></div>
     {!eligible && <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-relaxed text-amber-900">Incident analysis is available only for FAILED or DEAD_LETTERED workflows. Current state: {workflow.data.state}.</div>}
     {analysis.isError && <div className="mb-5"><ErrorState title="Analysis could not be completed" description={apiErrorMessage(analysis.error)} onRetry={() => analysis.mutate()} /></div>}
-    {!summary && <Card className="mb-5 flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between"><div className="flex gap-3"><div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-violet-50 text-violet-600"><Bot size={19} /></div><div><h2 className="text-sm font-bold text-slate-900">Generate a bounded evidence analysis</h2><p className="mt-1 max-w-2xl text-xs leading-relaxed text-slate-500">The backend returns one summary for this request. It does not expose incident history, and the assistant cannot mutate or operate the workflow.</p></div></div><Button disabled={!eligible || analysis.isPending} onClick={() => analysis.mutate()}><ShieldAlert size={15} />{analysis.isPending ? "Analyzing evidence…" : "Analyze failure"}</Button></Card>}
+    {!summary && !isPersisted && <Card className="mb-5 flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between"><div className="flex gap-3"><div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-violet-50 text-violet-600"><Bot size={19} /></div><div><h2 className="text-sm font-bold text-slate-900">Generate a bounded evidence analysis</h2><p className="mt-1 max-w-2xl text-xs leading-relaxed text-slate-500">The backend persists each generated summary for later review. The assistant cannot mutate or operate the workflow.</p></div></div><Button disabled={!eligible || analysis.isPending} onClick={() => analysis.mutate()}><ShieldAlert size={15} />{analysis.isPending ? "Analyzing evidence…" : "Analyze failure"}</Button></Card>}
     {summary && <>
       <Card className="mb-5 p-5 sm:p-6"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2 text-sm font-bold text-slate-900"><Bot size={17} className="text-violet-600" />Incident summary</div><p className="mt-2 text-base font-semibold leading-relaxed text-slate-800">{summary.summary.headline}</p><p className="mt-2 text-[11px] text-slate-500">Incident {summary.id}</p></div><div className="flex flex-col items-end gap-2"><Badge variant={summary.summary.insufficient_evidence ? "warning" : "success"}>{summary.summary.insufficient_evidence ? "Insufficient evidence" : "Evidence grounded"}</Badge><span className="text-[10px] text-slate-400">{formatDate(summary.created_at)}</span></div></div>{summary.summary.insufficient_evidence && <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-900">The assistant could not establish a reliable root cause from the available evidence.</div>}<div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-100 pt-4 text-[10px] text-slate-500"><span>Provider: {summary.provider}</span><span>Model: {summary.model}</span><span>Latency: {formatDuration(summary.latency_ms)}</span><span>Prompt: {summary.prompt_version}</span></div></Card>
       <div className="grid gap-5 xl:grid-cols-[1fr_.9fr]">

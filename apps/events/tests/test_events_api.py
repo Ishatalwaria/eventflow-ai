@@ -150,7 +150,8 @@ def test_revoked_client_cannot_authenticate(api_credentials):
 
 
 def test_management_services_create_hash_rotate_and_revoke_credentials():
-    client, first_token = create_api_client("rotating-client")
+    client, first_token = create_api_client("rotating-client", can_view_analytics=True)
+    assert client.can_view_analytics is True
     first_secret = first_token.split(".", maxsplit=1)[1]
     assert first_secret not in client.secret_hash
     assert check_password(first_secret, client.secret_hash)
@@ -158,6 +159,7 @@ def test_management_services_create_hash_rotate_and_revoke_credentials():
     second_token = rotate_api_client(client)
     client.refresh_from_db()
     second_secret = second_token.split(".", maxsplit=1)[1]
+    assert client.can_view_analytics is True
     assert client.rotated_at is not None
     assert second_secret not in client.secret_hash
     assert check_password(second_secret, client.secret_hash)
@@ -181,6 +183,36 @@ def test_duplicate_returns_existing_ids_and_does_not_create_more_rows(api_creden
     assert second.json()["duplicate"] is True
     assert second.json()["event_id"] == first.json()["event_id"]
     assert second.json()["workflow_id"] == first.json()["workflow_id"]
+    assert Event.objects.count() == Workflow.objects.count() == 1
+    assert OutboxMessage.objects.count() == ProcessingLog.objects.count() == 1
+
+
+def test_reused_idempotency_key_with_changed_body_returns_original_event(api_credentials):
+    _, token = api_credentials
+    original = post_event(token)
+    changed = make_event(
+        correlation_id="different-correlation",
+        payload={
+            "order_id": "different-order",
+            "currency": "INR",
+            "total_minor_units": 500,
+            "items": [{"sku": "SKU-2", "quantity": 1}],
+        },
+    )
+
+    replay = post_event(token, changed)
+    event_id = original.json()["event_id"]
+    detail = APIClient().get(
+        f"/api/v1/events/{event_id}",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+
+    assert original.status_code == 201
+    assert replay.status_code == 200
+    assert replay.json()["duplicate"] is True
+    assert replay.json()["event_id"] == event_id
+    assert detail.json()["correlation_id"] == "checkout-100"
+    assert detail.json()["payload"]["order_id"] == "order-100"
     assert Event.objects.count() == Workflow.objects.count() == 1
     assert OutboxMessage.objects.count() == ProcessingLog.objects.count() == 1
 
@@ -286,6 +318,40 @@ def test_workflow_detail_filter_and_pagination(api_credentials):
     assert invalid.status_code == 400
 
 
+def test_event_collection_is_paginated_filterable_and_omits_payload(api_credentials):
+    _, token = api_credentials
+    for index in range(3):
+        post_event(
+            token,
+            make_event(
+                idempotency_key=f"collection-order-{index}",
+                correlation_id=f"collection-checkout-{index}",
+                source=f"store-{index}",
+            ),
+        )
+
+    headers = {"HTTP_AUTHORIZATION": f"Bearer {token}"}
+    collection = APIClient().get("/api/v1/events?page_size=2&page=1", **headers)
+    filtered = APIClient().get(
+        "/api/v1/events?search=collection-checkout-1&event_type=order.created"
+        f"&date_from={timezone.localdate().isoformat()}&date_to={timezone.localdate().isoformat()}",
+        **headers,
+    )
+    invalid_range = APIClient().get(
+        "/api/v1/events?date_from=2026-10-31&date_to=2026-10-01", **headers
+    )
+
+    assert collection.status_code == 200
+    assert collection.json()["count"] == 3
+    assert len(collection.json()["results"]) == 2
+    assert "payload" not in collection.json()["results"][0]
+    assert collection.json()["results"][0]["workflow"]["state"]
+    assert filtered.status_code == 200
+    assert filtered.json()["count"] == 1
+    assert filtered.json()["results"][0]["correlation_id"] == "collection-checkout-1"
+    assert invalid_range.status_code == 400
+
+
 def test_event_and_workflow_details_are_scoped_to_authenticated_client(api_credentials):
     _, token = api_credentials
     accepted = post_event(token).json()
@@ -306,6 +372,9 @@ def test_event_and_workflow_details_are_scoped_to_authenticated_client(api_crede
 
     assert event_response.status_code == 404
     assert workflow_response.status_code == 404
+    list_response = APIClient().get("/api/v1/events", HTTP_AUTHORIZATION=f"Bearer {other_token}")
+    assert list_response.status_code == 200
+    assert list_response.json()["count"] == 0
 
 
 @pytest.mark.skipif(

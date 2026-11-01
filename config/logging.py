@@ -46,4 +46,4 @@ class JsonFormatter(logging.Formatter):
                 }
             }
         )
-        return json.dumps(fields, ensure_ascii=False)
+        return json.dumps(fields, ensure_ascii=False, default=str)

@@ -1,5 +1,5 @@
 import api from "../client";
-import type { HealthResponse } from "../types";
+import type { HealthResponse, ServiceHealthSummary } from "../types";
 
 export const healthService = {
   async live() {
@@ -8,6 +8,10 @@ export const healthService = {
   },
   async ready() {
     const response = await api.get<HealthResponse>("/health/ready");
+    return response.data;
+  },
+  async services() {
+    const response = await api.get<ServiceHealthSummary>("/health/services");
     return response.data;
   },
 };

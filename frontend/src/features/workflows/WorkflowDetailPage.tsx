@@ -9,6 +9,7 @@ import { useAuth } from "../../app/auth";
 import { ErrorState, LoadingState, PageHeader, SectionTitle, StateBadge } from "../../components/layout";
 import { Badge, Button, Card } from "../../components/ui";
 import { formatDate, formatDuration, sanitizeDiagnosticText } from "../../lib/utils";
+import { copyToClipboard } from "../../lib/clipboard";
 
 export function WorkflowDetailPage() {
   const { workflowId = "" } = useParams();
@@ -23,7 +24,7 @@ export function WorkflowDetailPage() {
       toast.success("Evidence-grounded incident summary created.");
     }
   }, [incident.data]);
-  const copy = async (id: string) => { await navigator.clipboard.writeText(id); toast.success("ID copied to clipboard."); };
+  const copy = async (id: string) => { await copyToClipboard(id, "ID copied to clipboard."); };
   if (!hasToken) return <><PageHeader title="Workflow" /><Card><ErrorState title="API connection required" description="Connect a client token in Settings to inspect this workflow." /></Card></>;
   if (query.isLoading) return <><PageHeader title="Workflow details" /><Card><LoadingState /></Card></>;
   if (query.isError || !query.data) return <><PageHeader title="Workflow details" /><ErrorState description={apiErrorMessage(query.error)} onRetry={() => void query.refetch()} /></>;

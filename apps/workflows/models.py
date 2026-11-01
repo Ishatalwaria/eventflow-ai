@@ -79,7 +79,10 @@ class WorkflowAttempt(models.Model):
                 name="attempt_outcome_valid",
             ),
         ]
-        indexes = [models.Index(fields=["workflow", "started_at"], name="attempt_wf_started_idx")]
+        indexes = [
+            models.Index(fields=["workflow", "started_at"], name="attempt_wf_started_idx"),
+            models.Index(fields=["started_at"], name="workflow_attempt_started_idx"),
+        ]
 
     def __str__(self):
         return f"{self.workflow_id}:{self.stage}#{self.attempt_number}"

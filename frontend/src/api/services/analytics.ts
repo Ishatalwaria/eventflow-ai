@@ -1,5 +1,14 @@
-/** Analytics are currently available only through the backend management command. */
+import api from "../client";
+import type { LifecycleAnalytics } from "../types";
+
+export interface LifecycleAnalyticsParams {
+  date_from: string;
+  date_to: string;
+}
+
 export const analyticsService = {
-  isAvailableThroughApi: false as const,
-  unavailableReason: "The backend has no HTTP analytics endpoint. No report request is made from the browser.",
+  async lifecycle(params: LifecycleAnalyticsParams) {
+    const response = await api.get<LifecycleAnalytics>("/api/v1/analytics/tenant-lifecycle", { params });
+    return response.data;
+  },
 };

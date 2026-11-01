@@ -6,10 +6,11 @@ This map reflects the Django URL configuration, serializers, views, authenticati
 
 - `VITE_API_BASE_URL` is the API origin. In Vite development, `/api` and `/health` use a same-origin proxy to that configured URL; production requests use it directly and therefore require CORS at the serving gateway when origins differ.
 - Protected endpoints use `Authorization: Bearer <CLIENT_UUID>.<SECRET>`. The backend stores only a password hash and issues the raw token once when creating/rotating a client credential.
-- The API client token stays in JavaScript memory only and is cleared on page reload or API `401`. It is still visible to the browser owner and scripts running in the page; this is a local/development integration, not a production user-credential boundary. A production browser client should call the API through a server-side backend-for-frontend. The frontend never receives provider credentials, broker credentials, database credentials, or the metrics token.
+- The API client token stays in JavaScript memory only and is cleared on page reload or API `401`. It is still visible to the browser owner and scripts running in the page; this is a local/development integration, not a production user-credential boundary. Analytics-enabled tokens can read system-wide aggregate data and should only be used in controlled local/demo environments; production should use a server-side backend-for-frontend and operator identity. The frontend never receives provider credentials, broker credentials, database credentials, or the metrics token.
 - JSON API errors use `{ "error": { "code": string, "message": string, "request_id": string | null, "details": object } }`. Responses include `X-Request-ID` and `X-Trace-ID`.
-- Workflow lists are paginated: `{ count, next, previous, results }`; default page size is 50, `page_size` is capped at 100. Workflow filtering supports `state`.
+- Event and workflow lists are paginated: `{ count, next, previous, results }`; default page size is 50, `page_size` is capped at 100. Event filters support `search`, `event_type`, `date_from`, and `date_to` (received date, `YYYY-MM-DD`); workflow filtering supports `state`.
 - Event JSON bodies are limited to 256 KiB. Batch requests contain 1–50 events.
+- Idempotency identity is `(API client, source, idempotency_key)`. Reusing the key returns the original event/workflow even if other request fields differ; use a new key for a distinct event.
 
 ## Endpoint mapping
 
@@ -17,12 +18,19 @@ This map reflects the Django URL configuration, serializers, views, authenticati
 |---|---|---|---|---|---|
 | GET | `/health/live` | None | System Health | None | `200 {"status":"ok"}` if the process serves requests. Does not check dependencies. |
 | GET | `/health/ready` | None | System Health | None | `200 {"status":"ready","checks":{"database":"ok"}}` or `503 {"status":"not_ready","checks":{"database":"unavailable"}}`. Checks PostgreSQL only. |
+| GET | `/health/services` | API client bearer | System Health | None | Bounded server-side PostgreSQL/Kafka/RabbitMQ/ClickHouse probes, worker metrics endpoint status, LLM not-checked status, and an allowlisted metric summary. Metrics credentials and raw exposition remain server-side. |
 | POST | `/api/v1/events` | API client bearer | Events | One event envelope (below) | `201` for newly accepted event, `200` for idempotent duplicate. `{ event_id, workflow_id, workflow_state, duplicate }`. |
 | POST | `/api/v1/events/batch` | API client bearer | Events | `{ "events": [event envelope, ...] }`, max 50 | `200 { "results": [acceptance result, ...] }`; batch write is transactional/all-or-nothing. |
-| GET | `/api/v1/events/{event_id}` | API client bearer; tenant-scoped | Events | UUID path | Event detail with a nested workflow summary. `404` when missing or owned by another client. There is no event-list endpoint. |
+| GET | `/api/v1/events` | API client bearer; tenant-scoped | Events | Optional `search`, `event_type`, `date_from`, `date_to`, `page`, `page_size` | Paginated event metadata with nested workflow status. Search covers event ID (exact), event type, source, idempotency key, and correlation ID. Payload and request ID are omitted from collection results. |
+| GET | `/api/v1/events/{event_id}` | API client bearer; tenant-scoped | Events | UUID path | Event detail with a nested workflow summary. `404` when missing or owned by another client. |
 | GET | `/api/v1/workflows` | API client bearer; tenant-scoped | Workflows, Overview, AI Incidents | Optional `state` from `RECEIVED`, `QUEUED`, `PROCESSING`, `RETRY_WAIT`, `SUCCEEDED`, `FAILED`, `DEAD_LETTERED`; `page`, `page_size` | Paginated workflow detail objects including attempt history. |
 | GET | `/api/v1/workflows/{workflow_id}` | API client bearer; tenant-scoped | Workflows | UUID path | Workflow detail including attempts. `404` when missing or owned by another client. |
+| GET | `/api/v1/analytics/overview` | API client bearer; tenant-scoped | Overview | None | Current PostgreSQL event/workflow counts, seven-day terminal workflow activity, recent event/workflow metadata, average end-to-end terminal workflow latency, and tenant outbox pending/dead-letter counts. `average_processing_latency_ms` is `null` when no supported PostgreSQL aggregate is available. |
+| GET | `/api/v1/analytics/tenant-lifecycle` | API client bearer; tenant-scoped | Analytics | Required `date_from`, `date_to` (`YYYY-MM-DD`); maximum 367 inclusive days | PostgreSQL current-state success/failure, latency percentiles on PostgreSQL, retry/error/stage aggregates, activity and freshness metadata scoped to the authenticated API client. |
 | POST | `/api/v1/workflows/{workflow_id}/incident-summary` | API client bearer; tenant-scoped; throttled | AI Incidents | Empty body | `201` persisted incident summary; only `FAILED` or `DEAD_LETTERED` workflows are eligible. Provider outage returns `503`; invalid provider output returns `502`; other errors use the common API error envelope. |
+| GET | `/api/v1/analytics/lifecycle` | API client bearer with analytics capability | Analytics | Required `date_from`, `date_to` (`YYYY-MM-DD`); maximum 367 inclusive days | ClickHouse lifecycle metrics, generated timestamp, latest event timestamp and measured data lag. Returns `403` without explicit capability and `503` when ClickHouse data is unavailable. Results are eventually consistent with PostgreSQL. |
+| GET | `/api/v1/incidents` | API client bearer; tenant-scoped | AI Incidents | Optional `search`, `workflow_state` (`FAILED`, `DEAD_LETTERED`), `page`, `page_size` | Paginated incident metadata with incident/workflow/event IDs, headline, workflow state, provider/model and creation time. Evidence is omitted from list results. |
+| GET | `/api/v1/incidents/{incident_id}` | API client bearer; tenant-scoped | AI Incidents | UUID path | Full persisted incident summary and bounded evidence. `404` when missing or linked to another tenant. |
 | GET | `/api/schema/` | None | Developer/support | None | OpenAPI schema generated by drf-spectacular. |
 | GET | `/api/docs/` | None | Developer/support | None | Swagger UI for the schema. |
 | GET | `/metrics` | `X-Metrics-Token` required | Not integrated | None | Prometheus text format; `403` without the separate metrics token. This frontend does not collect or store this privileged token. |
@@ -75,7 +83,11 @@ The current processing implementation records `order_validation` as its attempt 
 
 ## Incident summary response fields
 
-The persisted response contains `id`, `workflow_id`, `evidence_hash`, `evidence`, `summary`, `prompt_version`, `provider`, `model`, `latency_ms`, `input_tokens`, `output_tokens`, and `created_at`. `summary` has `headline`, `confirmed_facts`, `hypotheses`, `unknowns`, `recommended_checks`, and `insufficient_evidence`. Facts/hypotheses cite evidence IDs. The endpoint creates a summary; there is no incident list or read endpoint.
+The persisted response contains `id`, `workflow_id`, `evidence_hash`, `evidence`, `summary`, `prompt_version`, `provider`, `model`, `latency_ms`, `input_tokens`, `output_tokens`, and `created_at`. `summary` has `headline`, `confirmed_facts`, `hypotheses`, `unknowns`, `recommended_checks`, and `insufficient_evidence`. Facts/hypotheses cite evidence IDs. Tenant-scoped list/detail endpoints expose persisted summaries; evidence is omitted from list results.
+
+## Lifecycle analytics response fields
+
+`GET /api/v1/analytics/tenant-lifecycle` returns the lifecycle metrics scoped to the authenticated client from PostgreSQL current state. It is the frontend's default Analytics source and does not require the global analytics capability. `GET /api/v1/analytics/lifecycle` retains the same metrics from ClickHouse, labels them `eventually_consistent`, and aggregates all tenants; its `can_view_analytics` capability defaults to false and should remain limited to controlled operator/demo credentials. To obtain a separate local analytics reader credential, run `docker compose exec -T api python manage.py client_credentials create --name "analytics-reader" --analytics-access` and paste the one-time token into Settings. This grants access to system-wide aggregates; do not grant it to ordinary tenant clients. PostgreSQL is authoritative for current workflow state.
 
 ## Error cases
 
@@ -90,13 +102,10 @@ The persisted response contains `id`, `workflow_id`, `evidence_hash`, `evidence`
 
 ## Backend capabilities unavailable to the frontend
 
-1. No event collection endpoint: the UI can detail known event UUIDs and filters/paginates only those IDs returned by submissions in this browser session. Receipt IDs are stored in `sessionStorage` (never the client token); older events cannot be discovered.
-2. No incident list/detail endpoint: the UI can create an incident summary for an eligible workflow and display that returned response, but cannot retrieve it later.
-3. No analytics HTTP endpoint: analytics are available only through the `analytics_report` management command and ClickHouse. The dashboard must present this as unavailable instead of fake charts.
-4. No service-specific health API: readiness checks only PostgreSQL; Kafka, RabbitMQ, ClickHouse, workers, and the LLM provider cannot be reported as healthy/unhealthy from `/health/ready`.
-5. `/metrics` requires a separate privileged token. The browser UI does not request it or infer processing metrics from unavailable data.
-6. No API-client credential create/rotate endpoint: credentials are issued through Django management commands. For local development, users paste a previously created bearer token into Settings; this is not recommended for a production public browser app.
-7. No WebSocket/SSE API: workflow status can be refreshed by polling the workflow detail/list endpoints.
+1. No service-specific health API: readiness checks only PostgreSQL; Kafka, RabbitMQ, ClickHouse, workers, and the LLM provider cannot be reported as healthy/unhealthy from `/health/ready`.
+2. `/metrics` requires a separate privileged token. The browser UI does not request it or infer processing metrics from unavailable data.
+3. No API-client credential create/rotate endpoint: credentials are issued through Django management commands. For local development, users paste a previously created bearer token into Settings; this is not recommended for a production public browser app.
+4. No WebSocket/SSE API: workflow status can be refreshed by polling the workflow detail/list endpoints.
 
 ## Proposed frontend structure
 

@@ -39,3 +39,38 @@ class EventDetailSerializer(serializers.ModelSerializer):
             "payload",
             "workflow",
         )
+
+
+class EventListQuerySerializer(serializers.Serializer):
+    search = serializers.CharField(
+        required=False, allow_blank=True, max_length=128, trim_whitespace=True
+    )
+    event_type = serializers.CharField(required=False, max_length=200)
+    date_from = serializers.DateField(required=False)
+    date_to = serializers.DateField(required=False)
+
+    def validate(self, attrs):
+        if (
+            attrs.get("date_from")
+            and attrs.get("date_to")
+            and attrs["date_from"] > attrs["date_to"]
+        ):
+            raise serializers.ValidationError({"date_to": "Must be on or after date_from."})
+        return attrs
+
+
+class EventListSerializer(serializers.ModelSerializer):
+    workflow = WorkflowSummarySerializer(read_only=True)
+
+    class Meta:
+        model = Event
+        fields = (
+            "id",
+            "event_type",
+            "schema_version",
+            "source",
+            "idempotency_key",
+            "correlation_id",
+            "received_at",
+            "workflow",
+        )

@@ -12,6 +12,7 @@ env = environ.Env(
     LOG_LEVEL=(str, "INFO"),
     METRICS_TOKEN=(str, ""),
     METRICS_PORT=(int, 0),
+    WORKER_METRICS_URLS=(list, []),
     PROMETHEUS_MULTIPROC_DIR=(str, ""),
     KAFKA_BOOTSTRAP_SERVERS=(str, "127.0.0.1:29092"),
     KAFKA_CONSUMER_GROUP=(str, "eventflow.kafka-to-rabbit.v1"),
@@ -143,11 +144,8 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.SessionAuthentication",
-        "rest_framework.authentication.BasicAuthentication",
-    ],
-    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
+    "DEFAULT_AUTHENTICATION_CLASSES": ["apps.common.authentication.APIClientAuthentication"],
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_PAGINATION_CLASS": "apps.common.pagination.BoundedPageNumberPagination",
     "DEFAULT_THROTTLE_CLASSES": [],
     "DEFAULT_THROTTLE_RATES": {"incident-summary": "5/hour"},
@@ -222,6 +220,10 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "Event-driven workflow and operational intelligence platform.",
     "VERSION": "0.1.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    "POSTPROCESSING_HOOKS": [
+        "drf_spectacular.hooks.postprocess_schema_enums",
+        "apps.common.schema.add_api_error_envelopes",
+    ],
 }
 
 LOGGING = {
@@ -233,4 +235,5 @@ LOGGING = {
 }
 METRICS_TOKEN = env("METRICS_TOKEN")
 METRICS_PORT = env("METRICS_PORT")
+WORKER_METRICS_URLS = env("WORKER_METRICS_URLS")
 PROMETHEUS_MULTIPROC_DIR = env("PROMETHEUS_MULTIPROC_DIR")

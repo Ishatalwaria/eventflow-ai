@@ -1,13 +1,13 @@
 import { ArrowLeft, Clipboard, GitBranch } from "lucide-react";
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { toast } from "sonner";
 import { apiErrorMessage } from "../../api/client";
 import { useEvent } from "../../api/hooks";
 import { useAuth } from "../../app/auth";
 import { EmptyState, ErrorState, LoadingState, PageHeader, StateBadge } from "../../components/layout";
 import { Button, Card } from "../../components/ui";
 import { formatDate } from "../../lib/utils";
+import { copyToClipboard } from "../../lib/clipboard";
 
 export function EventDetailPage() {
   const { eventId = "" } = useParams();
@@ -15,8 +15,7 @@ export function EventDetailPage() {
   const query = useEvent(eventId, hasToken);
   const [copying, setCopying] = useState("");
   const copy = async (key: string, value: string) => {
-    try { await navigator.clipboard.writeText(value); setCopying(key); toast.success("Copied to clipboard."); window.setTimeout(() => setCopying(""), 1200); }
-    catch { toast.error("Clipboard access is unavailable in this browser."); }
+    if (await copyToClipboard(value, "Copied to clipboard.")) { setCopying(key); window.setTimeout(() => setCopying(""), 1200); }
   };
   return <>
     <PageHeader eyebrow="Event record" title="Event details" description="Complete metadata returned by the tenant-scoped event detail API." actions={<Button variant="outline" asChild><Link to="/events"><ArrowLeft size={15} />Back to events</Link></Button>} />

@@ -1,8 +1,10 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { eventsService } from "./services/events";
+import { eventsService, type EventListParams } from "./services/events";
 import { healthService } from "./services/health";
-import { incidentsService } from "./services/incidents";
+import { incidentsService, type IncidentListParams } from "./services/incidents";
 import { workflowsService, type WorkflowListParams } from "./services/workflows";
+import { analyticsService, type LifecycleAnalyticsParams } from "./services/analytics";
+import { overviewService } from "./services/overview";
 import type { EventEnvelope, WorkflowState } from "./types";
 
 export const workflowStateKeys: WorkflowState[] = ["RECEIVED", "QUEUED", "PROCESSING", "RETRY_WAIT", "SUCCEEDED", "FAILED", "DEAD_LETTERED"];
@@ -33,22 +35,65 @@ export function useEvent(eventId: string, enabled = true) {
   return useQuery({ queryKey: ["events", "detail", eventId], queryFn: () => eventsService.get(eventId), enabled: enabled && Boolean(eventId) });
 }
 
+export function useEvents(params: EventListParams = {}, enabled = true) {
+  return useQuery({ queryKey: ["events", "list", params], queryFn: () => eventsService.list(params), enabled });
+}
+
 export function useCreateEvent() {
   const queryClient = useQueryClient();
-  return useMutation({ mutationFn: (envelope: EventEnvelope) => eventsService.create(envelope), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["workflows"] }); void queryClient.invalidateQueries({ queryKey: ["workflows", "count"] }); } });
+  return useMutation({ mutationFn: (envelope: EventEnvelope) => eventsService.create(envelope), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["events", "list"] }); void queryClient.invalidateQueries({ queryKey: ["workflows"] }); void queryClient.invalidateQueries({ queryKey: ["workflows", "count"] }); } });
 }
 
 export function useCreateEventBatch() {
   const queryClient = useQueryClient();
-  return useMutation({ mutationFn: (envelopes: EventEnvelope[]) => eventsService.createBatch(envelopes), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["workflows"] }); void queryClient.invalidateQueries({ queryKey: ["workflows", "count"] }); } });
+  return useMutation({ mutationFn: (envelopes: EventEnvelope[]) => eventsService.createBatch(envelopes), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["events", "list"] }); void queryClient.invalidateQueries({ queryKey: ["workflows"] }); void queryClient.invalidateQueries({ queryKey: ["workflows", "count"] }); } });
 }
 
 export function useCreateIncidentSummary(workflowId: string) {
-  return useMutation({ mutationFn: () => incidentsService.createSummary(workflowId) });
+  const queryClient = useQueryClient();
+  return useMutation({ mutationFn: () => incidentsService.createSummary(workflowId), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["incidents", "list"] }); } });
+}
+
+export function useIncidentSummaries(params: IncidentListParams = {}, enabled = true) {
+  return useQuery({ queryKey: ["incidents", "list", params], queryFn: () => incidentsService.list(params), enabled });
+}
+
+export function useIncidentSummary(incidentId: string, enabled = true) {
+  return useQuery({ queryKey: ["incidents", "detail", incidentId], queryFn: () => incidentsService.get(incidentId), enabled: enabled && Boolean(incidentId) });
+}
+
+export function useLifecycleAnalytics(params: LifecycleAnalyticsParams, enabled = true) {
+  return useQuery({
+    queryKey: ["analytics", "lifecycle", params],
+    queryFn: () => analyticsService.lifecycle(params),
+    enabled,
+    staleTime: 120_000,
+    refetchInterval: 300_000,
+  });
+}
+
+export function useOverview(enabled = true) {
+  return useQuery({
+    queryKey: ["overview"],
+    queryFn: overviewService.get,
+    enabled,
+    staleTime: 15_000,
+    refetchInterval: 60_000,
+  });
 }
 
 export function useHealthChecks(enabled = true) {
   const live = useQuery({ queryKey: ["health", "live"], queryFn: healthService.live, enabled, refetchInterval: 30_000 });
   const ready = useQuery({ queryKey: ["health", "ready"], queryFn: healthService.ready, enabled, refetchInterval: 30_000 });
   return { live, ready, isLoading: live.isLoading || ready.isLoading, error: live.error ?? ready.error, refetch: () => { void live.refetch(); void ready.refetch(); } };
+}
+
+export function useServiceHealth(enabled = true) {
+  return useQuery({
+    queryKey: ["health", "services"],
+    queryFn: healthService.services,
+    enabled,
+    staleTime: 25_000,
+    refetchInterval: 30_000,
+  });
 }

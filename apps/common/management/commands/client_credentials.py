@@ -13,13 +13,20 @@ class Command(BaseCommand):
         parser.add_argument("action", choices=("create", "rotate", "revoke"))
         parser.add_argument("--name", help="Name for a new client.")
         parser.add_argument("--client-id", help="UUID of an existing client.")
+        parser.add_argument(
+            "--analytics-access",
+            action="store_true",
+            help="Grant read-only access to system-wide ClickHouse analytics.",
+        )
 
     def handle(self, *args, **options):
         action = options["action"]
         if action == "create":
             if not options["name"]:
                 raise CommandError("--name is required for create.")
-            client, token = create_api_client(options["name"])
+            client, token = create_api_client(
+                options["name"], can_view_analytics=options["analytics_access"]
+            )
             self.stdout.write(f"Client ID: {client.pk}")
             self.stdout.write(self.style.SUCCESS(f"Token (shown once): {token}"))
             return

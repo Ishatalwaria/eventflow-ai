@@ -10,6 +10,11 @@ _LOG_CONTEXT = ContextVar("eventflow_log_context", default=None)
 HTTP_REQUESTS = Counter(
     "eventflow_http_requests_total", "HTTP requests served", ["method", "route", "status"]
 )
+HTTP_REQUEST_DURATION = Histogram(
+    "eventflow_http_request_duration_seconds",
+    "HTTP request duration",
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10),
+)
 WORKFLOW_ATTEMPTS = Counter(
     "eventflow_workflow_attempts_total", "Persisted workflow attempts", ["stage", "outcome"]
 )

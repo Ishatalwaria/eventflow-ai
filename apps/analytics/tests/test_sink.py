@@ -131,3 +131,45 @@ def test_clickhouse_seeded_lifecycle_analytics():
     ]
     assert report["oldest_event_time"] == datetime(2041, 1, 2, 3, 4, 5)
     assert report["latest_event_time"] == datetime(2041, 1, 2, 3, 4, 5)
+
+
+@pytest.mark.integration
+def test_clickhouse_replay_after_offset_commit_failure_is_idempotent():
+    import os
+
+    from django.conf import settings
+
+    from apps.analytics.sink import TABLE
+
+    if os.getenv("EVENTFLOW_RUN_CLICKHOUSE_INTEGRATION") != "1":
+        pytest.skip("Set EVENTFLOW_RUN_CLICKHOUSE_INTEGRATION=1 for live ClickHouse checks.")
+
+    event = lifecycle_event()
+
+    class Record:
+        value = encode_message(event, lifecycle=True)
+
+    class CommitFailsOnce:
+        calls = 0
+
+        def commit(self, _record):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("simulated offset commit interruption")
+
+    consumer = CommitFailsOnce()
+    sink = ClickHouseLifecycleSink()
+    try:
+        with pytest.raises(RuntimeError, match="offset commit interruption"):
+            project_record(Record(), sink=sink, consumer=consumer)
+        project_record(Record(), sink=sink, consumer=consumer)
+        lifecycle_id = str(make_analytical_row(event)["lifecycle_id"])
+        count = sink.client.query(
+            f"SELECT count() FROM {settings.CLICKHOUSE_DATABASE}.{TABLE} FINAL "
+            "WHERE lifecycle_id = {lifecycle_id:UUID}",
+            parameters={"lifecycle_id": lifecycle_id},
+        ).result_rows[0][0]
+        assert consumer.calls == 2
+        assert count == 1
+    finally:
+        sink.client.close()

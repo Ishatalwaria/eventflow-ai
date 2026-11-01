@@ -25,7 +25,8 @@ const api = axios.create({ baseURL: requestBaseUrl, timeout: 12_000, headers: { 
 
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const token = getApiToken();
-  if (token && config.url?.startsWith("/api/v1/")) config.headers.Authorization = "Bearer " + token;
+  const requiresClientToken = config.url?.startsWith("/api/v1/") || config.url === "/health/services";
+  if (token && requiresClientToken) config.headers.Authorization = "Bearer " + token;
   else delete config.headers.Authorization;
   if (!config.headers["X-Request-ID"]) config.headers["X-Request-ID"] = crypto.randomUUID();
   return config;
@@ -34,11 +35,14 @@ api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
 function errorFromResponse(error: AxiosError<ApiError>) {
   const status = error.response?.status;
   const envelope = error.response?.data?.error;
+  const detail = envelope?.details && typeof envelope.details === "object" && "detail" in envelope.details
+    ? (envelope.details as { detail?: unknown }).detail
+    : undefined;
   const requestId = envelope?.request_id ?? error.response?.headers["x-request-id"] ?? null;
   const code = envelope?.code ?? "API_ERROR";
   const messages: Record<number, string> = {
     401: "Your API client token is missing, invalid, or revoked. Re-enter a valid token in Settings.",
-    403: "The API denied this request. Check the client permissions and endpoint access.",
+    403: typeof detail === "string" ? detail : envelope?.message ?? "The API denied this request. Check the client permissions and endpoint access.",
     404: "The requested record was not found or is not accessible to this client.",
     429: envelope?.message ?? "The API rate limit was reached. Wait before trying again.",
     500: "The API encountered an internal error.",

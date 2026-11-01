@@ -1,4 +1,4 @@
-import { useMutation, useQueries } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -6,14 +6,15 @@ import { Clipboard, FileJson2, RefreshCw, Search, Send, Upload } from "lucide-re
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { apiErrorMessage } from "../../api/client";
-import { useCreateEvent, useCreateEventBatch } from "../../api/hooks";
+import { useCreateEvent, useCreateEventBatch, useEvents } from "../../api/hooks";
 import { eventsService } from "../../api/services/events";
-import type { EventAcceptance, EventDetail, EventEnvelope } from "../../api/types";
+import type { EventDetail, EventEnvelope } from "../../api/types";
 import { useAuth } from "../../app/auth";
 import { Link } from "react-router-dom";
 import { EmptyState, ErrorState, LoadingState, PageHeader, Pagination, StateBadge } from "../../components/layout";
 import { Button, Card, DataTable, Input, Label, Select, Textarea } from "../../components/ui";
 import { compactId, formatDate } from "../../lib/utils";
+import { copyToClipboard } from "../../lib/clipboard";
 
 const payloadSchema = z.object({
   order_id: z.string().min(1).max(128),
@@ -39,16 +40,9 @@ function blankEvent(): EventForm {
   return { event_type: "order.created", schema_version: 1, source: "checkout-web", idempotency_key: id, occurred_at: new Date().toISOString(), correlation_id: id, payload: { order_id: "", currency: "INR", total_minor_units: 0, items: [{ sku: "", quantity: 1 }] } };
 }
 
-function recentKey(token: string) { return "eventflow.submittedEvents." + (token.split(".")[0] || "anonymous"); }
-function readRecent(token: string): EventAcceptance[] {
-  try { return JSON.parse(sessionStorage.getItem(recentKey(token)) ?? "[]") as EventAcceptance[]; } catch { return []; }
-}
-function saveRecent(token: string, items: EventAcceptance[]) { sessionStorage.setItem(recentKey(token), JSON.stringify(items.slice(0, 12))); }
-
 export function EventsPage() {
   const { hasToken, token } = useAuth();
   const [tab, setTab] = useState<"single" | "batch">("single");
-  const [recent, setRecent] = useState<EventAcceptance[]>(() => readRecent(token));
   const [lookupId, setLookupId] = useState("");
   const [eventDetail, setEventDetail] = useState<EventDetail | null>(null);
   const [payloadText, setPayloadText] = useState(() => JSON.stringify(blankEvent().payload, null, 2));
@@ -56,20 +50,15 @@ export function EventsPage() {
   const singleTokenRef = useRef(token);
   const batchTokenRef = useRef(token);
   const form = useForm<EventForm>({ resolver: zodResolver(eventFormSchema), defaultValues: blankEvent() });
-  useEffect(() => setRecent(readRecent(token)), [token]);
   const single = useCreateEvent();
   useEffect(() => {
     if (!single.data || singleTokenRef.current !== token) return;
-    const next = [single.data, ...readRecent(token).filter((item) => item.event_id !== single.data.event_id)];
-    setRecent(next); saveRecent(token, next);
     toast.success(single.data.duplicate ? "Duplicate accepted. Existing event returned." : "Event accepted and workflow created.");
   }, [single.data, token]);
   const [batchText, setBatchText] = useState("[]");
   const batch = useCreateEventBatch();
   useEffect(() => {
     if (!batch.data || batchTokenRef.current !== token) return;
-    const next = [...batch.data.results.slice().reverse(), ...readRecent(token)].filter((item, index, all) => all.findIndex((candidate) => candidate.event_id === item.event_id) === index).slice(0, 12);
-    setRecent(next); saveRecent(token, next);
     toast.success("Batch accepted: " + batch.data.results.length + " result(s).");
   }, [batch.data, token]);
   const lookup = useMutation({ mutationFn: (id: string) => eventsService.get(id), onSuccess: (data) => { setEventDetail(data); toast.success("Event loaded."); }, onError: () => setEventDetail(null) });
@@ -94,8 +83,8 @@ export function EventsPage() {
   const fieldError = (name: keyof EventForm) => form.formState.errors[name]?.message?.toString();
 
   return <>
-    <PageHeader eyebrow="Event ingestion" title="Events" description="Submit order events and inspect events created from this browser session." />
-    {hasToken && <KnownEventsTable token={token} recent={recent} />}
+    <PageHeader eyebrow="Event ingestion" title="Events" description="Submit order events and browse historical event records." />
+    {hasToken && <EventCollectionTable enabled={hasToken} />}
     {!hasToken ? <Card><EmptyState icon={Send} title="API connection required" description="Connect a client token in Settings before submitting or inspecting events." /></Card> : <div className="grid gap-5 xl:grid-cols-[1.25fr_.75fr]">
       <Card className="overflow-hidden"><div className="flex items-center justify-between border-b border-slate-100 px-5 py-4"><div><h2 className="text-sm font-bold text-slate-900">Event intake</h2><p className="mt-1 text-xs text-slate-500">The API accepts order.created, schema version 1.</p></div><div className="flex rounded-lg bg-slate-100 p-1"><button className={"rounded-md px-3 py-1.5 text-xs font-semibold " + (tab === "single" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500")} onClick={() => setTab("single")}>Single event</button><button className={"rounded-md px-3 py-1.5 text-xs font-semibold " + (tab === "batch" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500")} onClick={() => setTab("batch")}>Batch JSON</button></div></div>
         {tab === "single" ? <form onSubmit={onSingle} className="space-y-5 p-5 sm:p-6">
@@ -107,36 +96,36 @@ export function EventsPage() {
       </Card>
       <div className="space-y-5">
         <Card className="overflow-hidden"><div className="border-b border-slate-100 p-5"><h2 className="text-sm font-bold text-slate-900">Inspect an event</h2><p className="mt-1 text-xs text-slate-500">Load a known event UUID from the backend.</p></div><div className="space-y-3 p-5"><div className="flex gap-2"><Input aria-label="Event UUID" value={lookupId} onChange={(event) => setLookupId(event.target.value)} placeholder="Event UUID" /><Button aria-label="Search event" disabled={!lookupId.trim() || lookup.isPending} onClick={() => lookup.mutate(lookupId.trim())}><Search size={16} /></Button></div>{lookup.isPending && <LoadingState label="Loading event…" />}{lookup.isError && <div className="text-xs text-rose-700">{apiErrorMessage(lookup.error)}</div>}{eventDetail && <EventDetails detail={eventDetail} />}</div></Card>
-        <Card className="overflow-hidden"><div className="border-b border-slate-100 p-5"><div className="flex items-center justify-between"><div><h2 className="text-sm font-bold text-slate-900">Submitted in this tab</h2><p className="mt-1 text-xs text-slate-500">Session-only history; older events cannot be listed via the API.</p></div><span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-600">{recent.length}</span></div></div>{recent.length === 0 ? <EmptyState icon={FileJson2} title="No submissions in this session" description="Accepted events from this tab will show up here." /> : <div className="divide-y divide-slate-100">{recent.map((item) => <div key={item.event_id} className="flex items-center gap-3 p-4"><div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-blue-50 text-blue-600"><FileJson2 size={15} /></div><button className="min-w-0 flex-1 text-left" onClick={() => { setLookupId(item.event_id); lookup.mutate(item.event_id); }}><div className="truncate text-xs font-semibold text-slate-800">{compactId(item.event_id, 24)}</div><div className="mt-1 truncate text-[10px] text-slate-400">Workflow {compactId(item.workflow_id, 18)}</div></button><StateBadge state={item.workflow_state} /></div>)}</div>}</Card>
       </div>
     </div>}
   </>;
 }
 
-function KnownEventsTable({ token, recent }: { token: string; recent: EventAcceptance[] }) {
+function EventCollectionTable({ enabled }: { enabled: boolean }) {
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [eventType, setEventType] = useState("all");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   const [page, setPage] = useState(1);
   const pageSize = 8;
-  const queries = useQueries({ queries: recent.map((item) => ({ queryKey: ["events", "detail", item.event_id], queryFn: () => eventsService.get(item.event_id), enabled: Boolean(token), staleTime: 15_000 })) });
-  const records = queries.flatMap((query) => query.data ? [query.data] : []);
-  const types = [...new Set(records.map((record) => record.event_type))];
-  const filtered = records.filter((event) => {
-    const term = search.trim().toLowerCase();
-    const matchesSearch = !term || [event.id, event.event_type, event.source, event.idempotency_key, event.correlation_id].some((value) => value.toLowerCase().includes(term));
-    const receivedDate = event.received_at.slice(0, 10);
-    return matchesSearch && (eventType === "all" || event.event_type === eventType) && (!fromDate || receivedDate >= fromDate) && (!toDate || receivedDate <= toDate);
-  });
-  const maxPage = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const pageRecords = filtered.slice((page - 1) * pageSize, page * pageSize);
-  const loading = queries.some((query) => query.isLoading);
-  const failed = queries.some((query) => query.isError);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => window.clearTimeout(timeout);
+  }, [search]);
+  const events = useEvents({
+    page,
+    page_size: pageSize,
+    ...(debouncedSearch ? { search: debouncedSearch } : {}),
+    ...(eventType !== "all" ? { event_type: eventType } : {}),
+    ...(fromDate ? { date_from: fromDate } : {}),
+    ...(toDate ? { date_to: toDate } : {}),
+  }, enabled);
+  const records = events.data?.results ?? [];
   return <Card className="mb-5 overflow-hidden">
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4"><div><h2 className="text-sm font-bold text-slate-900">Known events</h2><p className="mt-1 text-xs text-slate-500">Details loaded from the API for event IDs submitted in this tab. The backend has no event collection endpoint.</p></div><Button size="sm" variant="outline" onClick={() => queries.forEach((query) => void query.refetch())} disabled={!recent.length || queries.some((query) => query.isFetching)}><RefreshCw size={14} />Refresh</Button></div>
-    <div className="grid gap-2 border-b border-slate-100 p-4 sm:grid-cols-2 xl:grid-cols-4"><Input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder="Search ID, source, key…" aria-label="Search known events" /><Select value={eventType} onChange={(event) => { setEventType(event.target.value); setPage(1); }} aria-label="Filter by event type"><option value="all">All event types</option>{types.map((type) => <option key={type}>{type}</option>)}</Select><Input type="date" value={fromDate} onChange={(event) => { setFromDate(event.target.value); setPage(1); }} aria-label="Received from date" /><Input type="date" value={toDate} onChange={(event) => { setToDate(event.target.value); setPage(1); }} aria-label="Received through date" /></div>
-    {loading ? <div className="p-6"><LoadingState label="Loading known event details…" /></div> : !pageRecords.length ? <EmptyState icon={FileJson2} title={recent.length ? "No matching events" : "No known events yet"} description={recent.length ? "Adjust the filters or search term." : "Events submitted from this tab will appear here. Older events cannot be discovered through the current API."} /> : <DataTable rows={pageRecords} rowKey={(event) => event.id} columns={[
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4"><div><h2 className="text-sm font-bold text-slate-900">Event history</h2><p className="mt-1 text-xs text-slate-500">Historical event records from the authenticated API.</p></div><Button size="sm" variant="outline" onClick={() => void events.refetch()} disabled={events.isFetching}><RefreshCw size={14} />Refresh</Button></div>
+    <div className="grid gap-2 border-b border-slate-100 p-4 sm:grid-cols-2 xl:grid-cols-4"><Input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder="Search ID, source, key…" aria-label="Search events" /><Select value={eventType} onChange={(event) => { setEventType(event.target.value); setPage(1); }} aria-label="Filter by event type"><option value="all">All event types</option><option value="order.created">order.created</option></Select><Input type="date" value={fromDate} onChange={(event) => { setFromDate(event.target.value); setPage(1); }} aria-label="Received from date" /><Input type="date" value={toDate} onChange={(event) => { setToDate(event.target.value); setPage(1); }} aria-label="Received through date" /></div>
+    {events.isLoading ? <div className="p-6"><LoadingState label="Loading events…" /></div> : events.isError ? <div className="p-5"><ErrorState title="Event history unavailable" description={apiErrorMessage(events.error)} onRetry={() => void events.refetch()} /></div> : !records.length ? <EmptyState icon={FileJson2} title={debouncedSearch || eventType !== "all" || fromDate || toDate ? "No matching events" : "No events yet"} description={debouncedSearch || eventType !== "all" || fromDate || toDate ? "Adjust the filters or search term." : "Accepted events will appear here after they are submitted."} /> : <DataTable rows={records} rowKey={(event) => event.id} columns={[
       { key: "id", header: "Event ID", cell: (event) => <Link className="font-mono text-blue-700 hover:underline" to={`/events/${event.id}`}>{compactId(event.id, 12)}</Link> },
       { key: "type", header: "Event type", cell: (event) => event.event_type, className: "font-medium text-slate-800" },
       { key: "source", header: "Source", cell: (event) => event.source },
@@ -147,8 +136,7 @@ function KnownEventsTable({ token, recent }: { token: string; recent: EventAccep
       { key: "status", header: "Status", cell: (event) => <StateBadge state={event.workflow.state} /> },
       { key: "actions", header: "", cell: (event) => <Link to={`/events/${event.id}`} className="font-semibold text-blue-700 hover:underline">Details</Link> },
     ]} />}
-    {failed && <div className="border-t border-amber-100 bg-amber-50 px-5 py-3 text-xs text-amber-800">Some known event records could not be loaded. Refresh to retry; inaccessible or expired records are omitted.</div>}
-    {!!filtered.length && <Pagination page={Math.min(page, maxPage)} count={filtered.length} pageSize={pageSize} onPageChange={setPage} />}
+    {!!events.data?.count && <Pagination page={page} count={events.data.count} pageSize={pageSize} onPageChange={setPage} />}
   </Card>;
 }
 
@@ -158,7 +146,7 @@ function Field({ label, error, children }: { label: string; error?: string; chil
 
 function EventDetails({ detail }: { detail: EventDetail }) {
   const [copied, setCopied] = useState(false);
-  const copy = async () => { await navigator.clipboard.writeText(detail.id); setCopied(true); toast.success("Event ID copied."); window.setTimeout(() => setCopied(false), 1200); };
+  const copy = async () => { if (await copyToClipboard(detail.id, "Event ID copied.")) { setCopied(true); window.setTimeout(() => setCopied(false), 1200); } };
   return <div className="rounded-xl border border-slate-100 bg-slate-50 p-4"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><div className="text-sm font-bold text-slate-900">{detail.event_type}</div><div className="mt-1 break-all font-mono text-[10px] text-slate-500">{detail.id}</div></div><Button size="icon" variant="ghost" aria-label="Copy event ID" onClick={copy}><Clipboard size={15} /></Button></div><div className="mt-3 flex items-center justify-between"><StateBadge state={detail.workflow.state} /><span className="text-[10px] text-slate-400">Received {formatDate(detail.received_at)}</span></div><dl className="mt-4 space-y-2 text-xs"><Row label="Source" value={detail.source} /><Row label="Correlation" value={detail.correlation_id} /><Row label="Workflow" value={compactId(detail.workflow.id, 28)} /></dl><pre className="mt-4 max-h-48 overflow-auto rounded-lg bg-slate-900 p-3 text-[10px] leading-relaxed text-slate-200">{JSON.stringify(detail.payload, null, 2)}</pre>{copied && <span className="sr-only">Copied</span>}</div>;
 }
 

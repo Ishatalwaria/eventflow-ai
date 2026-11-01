@@ -1,5 +1,6 @@
 import json
 import logging
+import uuid
 
 import pytest
 from config.logging import JsonFormatter
@@ -11,6 +12,7 @@ from apps.common.observability import bind_log_context
 
 
 def test_json_logs_include_correlation_context_and_redact_credentials():
+    event_id = uuid.uuid4()
     record = logging.LogRecord(
         "eventflow.test",
         logging.INFO,
@@ -23,7 +25,7 @@ def test_json_logs_include_correlation_context_and_redact_credentials():
     with bind_log_context(
         request_id="request-1",
         trace_id="request-1",
-        event_id="event-1",
+        event_id=event_id,
         workflow_id="workflow-1",
         correlation_id="correlation-1",
     ):
@@ -31,7 +33,7 @@ def test_json_logs_include_correlation_context_and_redact_credentials():
 
     parsed = json.loads(output)
     assert parsed["request_id"] == parsed["trace_id"] == "request-1"
-    assert parsed["event_id"] == "event-1"
+    assert parsed["event_id"] == str(event_id)
     assert parsed["workflow_id"] == "workflow-1"
     assert parsed["correlation_id"] == "correlation-1"
     assert "token-value" not in output

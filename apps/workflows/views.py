@@ -16,6 +16,10 @@ class WorkflowListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = WorkflowDetailSerializer
 
+    @extend_schema(parameters=[WorkflowListQuerySerializer])
+    def get(self, request, *args, **kwargs):
+        return self.list(request, *args, **kwargs)
+
     def get_queryset(self):
         return (
             Workflow.objects.filter(event__client=self.request.user)

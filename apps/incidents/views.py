@@ -1,16 +1,24 @@
+import uuid
+
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema
-from rest_framework import status
+from rest_framework import generics, status
 from rest_framework.exceptions import APIException
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.common.authentication import APIClientAuthentication
+from apps.incidents.models import IncidentSummary
 from apps.workflows.models import Workflow
 
 from .providers.base import PermanentProviderError, TransientProviderError
-from .serializers import IncidentSummarySerializer
+from .serializers import (
+    IncidentSummaryListQuerySerializer,
+    IncidentSummaryListSerializer,
+    IncidentSummarySerializer,
+)
 from .service import create_incident_summary
 from .throttles import IncidentSummaryThrottle
 
@@ -79,3 +87,58 @@ class IncidentSummaryCreateView(APIView):
         except PermanentProviderError as exc:
             raise IncidentSummaryInvalid(exc.error_code) from None
         return Response(IncidentSummarySerializer(record).data, status=status.HTTP_201_CREATED)
+
+
+class IncidentSummaryListView(generics.ListAPIView):
+    authentication_classes = [APIClientAuthentication]
+    permission_classes = [IsAuthenticated]
+    serializer_class = IncidentSummaryListSerializer
+
+    def get_queryset(self):
+        return (
+            IncidentSummary.objects.filter(workflow__event__client=self.request.user)
+            .select_related("workflow", "workflow__event")
+            .order_by("-created_at", "-id")
+        )
+
+    @extend_schema(parameters=[IncidentSummaryListQuerySerializer])
+    def get(self, request, *args, **kwargs):
+        query = IncidentSummaryListQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        queryset = self.get_queryset()
+        if params.get("workflow_state"):
+            queryset = queryset.filter(workflow__state=params["workflow_state"])
+        search = params.get("search", "")
+        if search:
+            search_filter = (
+                Q(summary__headline__icontains=search)
+                | Q(provider__icontains=search)
+                | Q(model__icontains=search)
+            )
+            try:
+                search_id = uuid.UUID(search)
+            except ValueError:
+                pass
+            else:
+                search_filter |= (
+                    Q(pk=search_id) | Q(workflow_id=search_id) | Q(workflow__event_id=search_id)
+                )
+            queryset = queryset.filter(search_filter)
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page, many=True)
+        return self.get_paginated_response(serializer.data)
+
+
+class IncidentSummaryDetailView(APIView):
+    authentication_classes = [APIClientAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses={200: IncidentSummarySerializer})
+    def get(self, request, incident_id):
+        summary = get_object_or_404(
+            IncidentSummary.objects.select_related("workflow", "workflow__event"),
+            pk=incident_id,
+            workflow__event__client=request.user,
+        )
+        return Response(IncidentSummarySerializer(summary).data)
