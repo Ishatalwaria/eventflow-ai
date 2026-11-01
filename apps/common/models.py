@@ -1,5 +1,6 @@
 import uuid
 
+from django.conf import settings
 from django.db import models
 
 
@@ -7,6 +8,13 @@ class APIClient(models.Model):
     """A client identity with a hash-only bearer secret."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="api_clients",
+    )
     name = models.CharField(max_length=120)
     secret_hash = models.CharField(max_length=256)
     can_view_analytics = models.BooleanField(default=False)

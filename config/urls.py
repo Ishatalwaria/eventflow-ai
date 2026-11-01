@@ -13,6 +13,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("health/", include("apps.common.urls")),
     path("metrics", MetricsView.as_view(), name="metrics"),
+    path("api/v1/", include("apps.common.auth_urls")),
     path("api/v1/", include("apps.events.urls")),
     path("api/v1/", include("apps.workflows.urls")),
     path("api/v1/", include("apps.incidents.urls")),

@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, BarChart3, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, GitBranch, HeartPulse, Inbox, LayoutDashboard, Menu, PanelLeftClose, PanelLeftOpen, Settings2, ShieldCheck, X, type LucideIcon } from "lucide-react";
+import { Activity, AlertTriangle, BarChart3, ChevronLeft, ChevronRight, CircleHelp, GitBranch, HeartPulse, Inbox, LayoutDashboard, LogOut, Menu, PanelLeftClose, PanelLeftOpen, Settings2, ShieldCheck, X, type LucideIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../app/auth";
@@ -61,15 +61,74 @@ export function AppLayout() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const title = Object.entries(pageTitles).find(([path]) => location.pathname.startsWith(path))?.[1] ?? "Operations";
-  const { hasToken } = useAuth();
+  const { user, logout, hasToken } = useAuth();
+  const initials = user?.name
+    ? user.name
+        .split(" ")
+        .map((n) => n[0])
+        .slice(0, 2)
+        .join("")
+        .toUpperCase()
+    : "EF";
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <div className="fixed inset-y-0 left-0 z-30 hidden lg:block"><Sidebar collapsed={collapsed} onToggle={() => setCollapsed(true)} /></div>
       {menuOpen && <div className="fixed inset-0 z-40 flex lg:hidden"><button className="absolute inset-0 bg-slate-950/40" aria-label="Close menu" onClick={() => setMenuOpen(false)} /><div className="relative h-full"><Sidebar close={() => setMenuOpen(false)} /></div></div>}
       <div className={cn("min-h-screen transition-[padding] duration-200", collapsed ? "lg:pl-[76px]" : "lg:pl-[256px]")}>
         <header className="sticky top-0 z-20 flex h-[76px] items-center justify-between border-b border-border/80 bg-white/90 px-5 backdrop-blur-xl sm:px-8">
-          <div className="flex items-center gap-3"><Button variant="ghost" size="icon" aria-label="Open navigation" className="lg:hidden" onClick={() => setMenuOpen(true)}><Menu size={19} /></Button><Button variant="ghost" size="icon" aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand sidebar" : "Collapse sidebar"} className="hidden lg:inline-flex" onClick={() => setCollapsed((value) => !value)}>{collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</Button><div><div className="text-[13px] font-bold text-slate-900">{title}</div><div className="mt-0.5 hidden text-[11px] text-slate-500 sm:block">Monitor and manage event-driven operations</div></div></div>
-          <div className="flex items-center gap-3"><div className="hidden items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] text-slate-500 lg:flex"><span className={cn("h-1.5 w-1.5 rounded-full", hasToken ? "bg-blue-500" : "bg-slate-400")} />{hasToken ? "Client token configured" : "Client token missing"}</div><NavLink to="/settings" aria-label="Open settings" className="grid h-9 w-9 place-items-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"><Settings2 size={17} /></NavLink><div className="hidden h-8 w-px bg-slate-200 sm:block" /><div className="hidden items-center gap-2 sm:flex"><div className="grid h-8 w-8 place-items-center rounded-full bg-blue-600 text-[11px] font-bold text-white">EF</div><div className="text-left"><div className="text-[11px] font-semibold text-slate-800">Operations</div><div className="text-[10px] text-slate-500">Local workspace</div></div><ChevronDown size={14} className="text-slate-400" /></div></div>
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" size="icon" aria-label="Open navigation" className="lg:hidden" onClick={() => setMenuOpen(true)}>
+              <Menu size={19} />
+            </Button>
+            <Button variant="ghost" size="icon" aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand sidebar" : "Collapse sidebar"} className="hidden lg:inline-flex" onClick={() => setCollapsed((value) => !value)}>
+              {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+            </Button>
+            <div>
+              <div className="text-[13px] font-bold text-slate-900">{title}</div>
+              <div className="mt-0.5 hidden text-[11px] text-slate-500 sm:block">Monitor and manage event-driven operations</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            {hasToken && (
+              <div className="hidden items-center gap-2 rounded-full border border-blue-200 bg-blue-50/50 px-3 py-1.5 text-[11px] text-blue-700 lg:flex">
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+                Token override active
+              </div>
+            )}
+            <NavLink to="/settings" aria-label="Open settings" title="Workspace Settings" className="grid h-9 w-9 place-items-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200">
+              <Settings2 size={17} />
+            </NavLink>
+            <div className="hidden h-8 w-px bg-slate-200 sm:block" />
+            {user ? (
+              <div className="flex items-center gap-2.5">
+                <div className="grid h-8 w-8 place-items-center rounded-full bg-blue-600 text-[11px] font-bold text-white shadow-sm shadow-blue-500/30">
+                  {initials}
+                </div>
+                <div className="hidden text-left sm:block">
+                  <div className="text-[11px] font-semibold text-slate-800">{user.name}</div>
+                  <div className="text-[10px] text-slate-500">{user.email}</div>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={logout}
+                  title="Sign out of console"
+                  aria-label="Sign out"
+                  className="ml-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                >
+                  <LogOut size={16} />
+                </Button>
+              </div>
+            ) : (
+              <NavLink
+                to="/login"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-blue-500"
+              >
+                Sign In
+              </NavLink>
+            )}
+          </div>
         </header>
         <main className="mx-auto max-w-[1440px] px-5 py-7 sm:px-8 sm:py-9"><Outlet /></main>
       </div>

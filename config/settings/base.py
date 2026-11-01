@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "corsheaders",
     "rest_framework",
     "drf_spectacular",
     "apps.common.apps.CommonConfig",
@@ -78,6 +79,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "apps.common.middleware.RequestIDMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -144,13 +146,30 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    "DEFAULT_AUTHENTICATION_CLASSES": ["apps.common.authentication.APIClientAuthentication"],
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "apps.common.authentication.APIClientAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
+    ],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_PAGINATION_CLASS": "apps.common.pagination.BoundedPageNumberPagination",
     "DEFAULT_THROTTLE_CLASSES": [],
-    "DEFAULT_THROTTLE_RATES": {"incident-summary": "5/hour"},
+    "DEFAULT_THROTTLE_RATES": {"incident-summary": "5/hour", "auth": "20/minute"},
     "EXCEPTION_HANDLER": "apps.common.exceptions.api_exception_handler",
 }
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOWED_ORIGINS = env.list(
+    "CORS_ALLOWED_ORIGINS",
+    default=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8000"],
+)
+CSRF_TRUSTED_ORIGINS = env.list(
+    "CSRF_TRUSTED_ORIGINS",
+    default=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8000"],
+)
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = "Lax"
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_HTTPONLY = False
+CSRF_COOKIE_SAMESITE = "Lax"
 EVENT_MAX_REQUEST_BYTES = 262_144
 EVENT_BATCH_MAX_SIZE = 50
 KAFKA_BOOTSTRAP_SERVERS = env("KAFKA_BOOTSTRAP_SERVERS")

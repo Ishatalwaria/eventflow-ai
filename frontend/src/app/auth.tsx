@@ -1,28 +1,108 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { clearApiToken, setApiToken } from "../api/auth-token";
+import { clearApiToken, getApiToken, setApiToken } from "../api/auth-token";
+import { authService } from "../api/services/auth";
+import type { UserProfile } from "../api/types";
 
 interface AuthContextValue {
+  user: UserProfile | null;
+  isLoading: boolean;
+  isAuthenticated: boolean;
+  isStaff: boolean;
   token: string;
+  hasToken: boolean;
   setToken: (value: string) => void;
   clearToken: () => void;
-  hasToken: boolean;
+  login: (credentials: { email: string; password: string }) => Promise<void>;
+  register: (payload: {
+    name: string;
+    email: string;
+    password: string;
+    password_confirm: string;
+  }) => Promise<void>;
+  logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
-  const [token, setTokenValue] = useState("");
-  const setToken = (value: string) => {
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [token, setTokenValue] = useState(() => getApiToken() || "");
+
+  const refreshUser = useCallback(async () => {
+    try {
+      const profile = await authService.getCurrentUser();
+      setUser(profile);
+    } catch {
+      setUser(null);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshUser();
+  }, [refreshUser]);
+
+  const setToken = useCallback((value: string) => {
     const normalized = value.trim();
     if (normalized !== token) queryClient.clear();
     setApiToken(normalized || null);
     setTokenValue(normalized);
-  };
-  const clearToken = () => setToken("");
+  }, [token, queryClient]);
+
+  const clearToken = useCallback(() => setToken(""), [setToken]);
+
+  const login = useCallback(
+    async (credentials: { email: string; password: string }) => {
+      await authService.login(credentials);
+      queryClient.clear();
+      await refreshUser();
+    },
+    [queryClient, refreshUser]
+  );
+
+  const register = useCallback(
+    async (payload: {
+      name: string;
+      email: string;
+      password: string;
+      password_confirm: string;
+    }) => {
+      await authService.register(payload);
+      queryClient.clear();
+      await refreshUser();
+    },
+    [queryClient, refreshUser]
+  );
+
+  const logout = useCallback(async () => {
+    try {
+      await authService.logout();
+    } catch {
+      // ignore network errors on logout
+    } finally {
+      setUser(null);
+      clearApiToken();
+      setTokenValue("");
+      queryClient.clear();
+    }
+  }, [queryClient]);
+
   useEffect(() => {
     const onUnauthorized = () => {
+      setUser(null);
       clearApiToken();
       setTokenValue("");
       queryClient.clear();
@@ -30,7 +110,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.addEventListener("eventflow:unauthorized", onUnauthorized);
     return () => window.removeEventListener("eventflow:unauthorized", onUnauthorized);
   }, [queryClient]);
-  const value = useMemo(() => ({ token, setToken, clearToken, hasToken: Boolean(token) }), [token, queryClient]);
+
+  const value = useMemo<AuthContextValue>(
+    () => ({
+      user,
+      isLoading,
+      isAuthenticated: Boolean(user),
+      isStaff: Boolean(user?.is_staff),
+      token,
+      hasToken: Boolean(user) || Boolean(token),
+      setToken,
+      clearToken,
+      login,
+      register,
+      logout,
+      refreshUser,
+    }),
+    [user, isLoading, token, setToken, clearToken, login, register, logout, refreshUser]
+  );
+
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 

@@ -21,13 +21,30 @@ export class ApiRequestError extends Error {
   }
 }
 
-const api = axios.create({ baseURL: requestBaseUrl, timeout: 12_000, headers: { Accept: "application/json", "Content-Type": "application/json" } });
+function getCookie(name: string): string | null {
+  if (typeof document === "undefined") return null;
+  const match = document.cookie.match(new RegExp("(^|;\\s*)(" + name + ")=([^;]*)"));
+  return match ? decodeURIComponent(match[3]) : null;
+}
+
+const api = axios.create({
+  baseURL: requestBaseUrl,
+  timeout: 12_000,
+  withCredentials: true,
+  headers: { Accept: "application/json", "Content-Type": "application/json" },
+});
 
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const token = getApiToken();
   const requiresClientToken = config.url?.startsWith("/api/v1/") || config.url === "/health/services";
   if (token && requiresClientToken) config.headers.Authorization = "Bearer " + token;
   else delete config.headers.Authorization;
+
+  const csrfToken = getCookie("csrftoken");
+  if (csrfToken && config.method && !["get", "head", "options"].includes(config.method.toLowerCase())) {
+    config.headers["X-CSRFToken"] = csrfToken;
+  }
+
   if (!config.headers["X-Request-ID"]) config.headers["X-Request-ID"] = crypto.randomUUID();
   return config;
 });

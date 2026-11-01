@@ -9,7 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.authentication import APIClientAuthentication
+from apps.common.scope import get_effective_client, resolve_client_filter
 from apps.incidents.models import IncidentSummary
 from apps.workflows.models import Workflow
 
@@ -67,21 +67,20 @@ class WorkflowNotFailed(APIException):
 
 
 class IncidentSummaryCreateView(APIView):
-    authentication_classes = [APIClientAuthentication]
     permission_classes = [IsAuthenticated]
     throttle_classes = [IncidentSummaryThrottle]
 
     @extend_schema(request=None, responses={201: IncidentSummarySerializer})
     def post(self, request, workflow_id):
         workflow = get_object_or_404(
-            Workflow.objects.select_related("event"),
+            Workflow.objects.filter(resolve_client_filter(request, prefix="event__client")).select_related("event"),
             pk=workflow_id,
-            event__client=request.user,
         )
         if workflow.state not in {Workflow.State.FAILED, Workflow.State.DEAD_LETTERED}:
             raise WorkflowNotFailed()
+        client = get_effective_client(request)
         try:
-            record = create_incident_summary(workflow, request.user)
+            record = create_incident_summary(workflow, client)
         except TransientProviderError as exc:
             raise IncidentSummaryUnavailable(exc.error_code) from None
         except PermanentProviderError as exc:
@@ -90,13 +89,12 @@ class IncidentSummaryCreateView(APIView):
 
 
 class IncidentSummaryListView(generics.ListAPIView):
-    authentication_classes = [APIClientAuthentication]
     permission_classes = [IsAuthenticated]
     serializer_class = IncidentSummaryListSerializer
 
     def get_queryset(self):
         return (
-            IncidentSummary.objects.filter(workflow__event__client=self.request.user)
+            IncidentSummary.objects.filter(resolve_client_filter(self.request, prefix="workflow__event__client"))
             .select_related("workflow", "workflow__event")
             .order_by("-created_at", "-id")
         )
@@ -131,14 +129,12 @@ class IncidentSummaryListView(generics.ListAPIView):
 
 
 class IncidentSummaryDetailView(APIView):
-    authentication_classes = [APIClientAuthentication]
     permission_classes = [IsAuthenticated]
 
     @extend_schema(responses={200: IncidentSummarySerializer})
     def get(self, request, incident_id):
         summary = get_object_or_404(
-            IncidentSummary.objects.select_related("workflow", "workflow__event"),
+            IncidentSummary.objects.filter(resolve_client_filter(request, prefix="workflow__event__client")).select_related("workflow", "workflow__event"),
             pk=incident_id,
-            workflow__event__client=request.user,
         )
         return Response(IncidentSummarySerializer(summary).data)

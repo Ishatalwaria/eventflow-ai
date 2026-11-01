@@ -5,6 +5,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.throttling import BaseThrottle
 
+from apps.common.scope import get_effective_client
 from .models import IncidentSummaryRateWindow
 
 
@@ -16,14 +17,17 @@ class IncidentSummaryThrottle(BaseThrottle):
     def allow_request(self, request, view):
         if not getattr(request.user, "is_authenticated", False):
             return True
+        client = get_effective_client(request)
+        if client is None:
+            return True
         now = timezone.now()
         with transaction.atomic():
             IncidentSummaryRateWindow.objects.get_or_create(
-                client_id=request.user.pk,
+                client_id=client.pk,
                 defaults={"window_started_at": now, "request_count": 0},
             )
             window = IncidentSummaryRateWindow.objects.select_for_update().get(
-                client_id=request.user.pk
+                client_id=client.pk
             )
             if now - window.window_started_at >= self.duration:
                 window.window_started_at = now

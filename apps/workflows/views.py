@@ -5,14 +5,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.authentication import APIClientAuthentication
+from apps.common.scope import resolve_client_filter
 
 from .models import Workflow
 from .serializers import WorkflowDetailSerializer, WorkflowListQuerySerializer
 
 
 class WorkflowListView(generics.ListAPIView):
-    authentication_classes = [APIClientAuthentication]
     permission_classes = [IsAuthenticated]
     serializer_class = WorkflowDetailSerializer
 
@@ -22,7 +21,7 @@ class WorkflowListView(generics.ListAPIView):
 
     def get_queryset(self):
         return (
-            Workflow.objects.filter(event__client=self.request.user)
+            Workflow.objects.filter(resolve_client_filter(self.request, prefix="event__client"))
             .select_related("event")
             .prefetch_related("attempts")
             .order_by("-created_at", "id")
@@ -41,14 +40,12 @@ class WorkflowListView(generics.ListAPIView):
 
 
 class WorkflowDetailView(APIView):
-    authentication_classes = [APIClientAuthentication]
     permission_classes = [IsAuthenticated]
 
     @extend_schema(responses={200: WorkflowDetailSerializer})
     def get(self, request, workflow_id):
         workflow = get_object_or_404(
-            Workflow.objects.select_related("event").prefetch_related("attempts"),
+            Workflow.objects.filter(resolve_client_filter(request, prefix="event__client")).select_related("event").prefetch_related("attempts"),
             pk=workflow_id,
-            event__client=request.user,
         )
         return Response(WorkflowDetailSerializer(workflow).data)

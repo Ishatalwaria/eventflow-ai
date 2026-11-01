@@ -214,3 +214,51 @@ export interface ServiceHealthSummary {
 export const WORKFLOW_STATES: WorkflowState[] = [
   "RECEIVED", "QUEUED", "PROCESSING", "RETRY_WAIT", "SUCCEEDED", "FAILED", "DEAD_LETTERED",
 ];
+
+export interface UserProfile {
+  id: string;
+  username: string;
+  name: string;
+  email: string;
+  type: "user" | "api_client";
+  is_staff: boolean;
+  is_api_client: boolean;
+  date_joined?: string;
+  can_view_analytics?: boolean;
+}
+
+export interface AuthLoginResponse {
+  id: number;
+  name: string;
+  email: string;
+  type: string;
+  is_staff: boolean;
+}
+
+export interface AuthRegisterResponse {
+  id: number;
+  name: string;
+  email: string;
+  type: string;
+  is_staff: boolean;
+  default_client_id: string;
+}
+
+export interface APIClientRecord {
+  id: string;
+  name: string;
+  can_view_analytics: boolean;
+  created_at: string;
+  rotated_at: string | null;
+  revoked_at: string | null;
+  is_active: boolean;
+}
+
+export interface CreatedAPIClientRecord {
+  id: string;
+  name: string;
+  token: string;
+  can_view_analytics: boolean;
+  created_at: string;
+  message: string;
+}

@@ -55,7 +55,8 @@ def test_drf_defaults_deny_anonymous_access_and_public_health_exceptions_remain_
         "rest_framework.permissions.IsAuthenticated"
     ]
     assert settings.REST_FRAMEWORK["DEFAULT_AUTHENTICATION_CLASSES"] == [
-        "apps.common.authentication.APIClientAuthentication"
+        "apps.common.authentication.APIClientAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
     ]
 
     client = APIClient()

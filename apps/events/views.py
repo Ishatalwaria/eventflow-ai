@@ -9,9 +9,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.authentication import APIClientAuthentication
 from apps.common.pagination import BoundedPageNumberPagination
 from apps.common.parsers import BoundedJSONParser
+from apps.common.scope import get_effective_client, resolve_client_filter
 from apps.events.contracts import EventBatchSerializer, EventEnvelopeSerializer
 from apps.events.models import Event
 from apps.events.serializers import (
@@ -36,7 +36,6 @@ def acceptance_data(result):
 
 
 class EventAPIBase(APIView):
-    authentication_classes = [APIClientAuthentication]
     permission_classes = [IsAuthenticated]
     parser_classes = [BoundedJSONParser]
 
@@ -49,8 +48,14 @@ class EventBatchCreateView(EventAPIBase):
     def post(self, request):
         serializer = EventBatchSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        client = get_effective_client(request)
+        if client is None:
+            return Response(
+                {"error": {"code": "UNAUTHORIZED", "message": "Valid client credentials required."}},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
         results = accept_events(
-            client=request.user,
+            client=client,
             envelopes=serializer.validated_data["events"],
             request_id=request.request_id,
         )
@@ -58,7 +63,6 @@ class EventBatchCreateView(EventAPIBase):
 
 
 class EventCollectionView(generics.ListAPIView):
-    authentication_classes = [APIClientAuthentication]
     permission_classes = [IsAuthenticated]
     parser_classes = [BoundedJSONParser]
     serializer_class = EventListSerializer
@@ -71,8 +75,14 @@ class EventCollectionView(generics.ListAPIView):
     def post(self, request):
         serializer = EventEnvelopeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        client = get_effective_client(request)
+        if client is None:
+            return Response(
+                {"error": {"code": "UNAUTHORIZED", "message": "Valid client credentials required."}},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
         result = accept_events(
-            client=request.user,
+            client=client,
             envelopes=[serializer.validated_data],
             request_id=request.request_id,
         )[0]
@@ -81,7 +91,7 @@ class EventCollectionView(generics.ListAPIView):
 
     def get_queryset(self):
         return (
-            Event.objects.filter(client=self.request.user)
+            Event.objects.filter(resolve_client_filter(self.request, prefix="client"))
             .select_related("workflow")
             .order_by("-received_at", "-id")
         )
@@ -123,8 +133,7 @@ class EventDetailView(EventAPIBase):
     @extend_schema(responses={200: EventDetailSerializer})
     def get(self, request, event_id):
         event = get_object_or_404(
-            Event.objects.select_related("workflow"),
+            Event.objects.filter(resolve_client_filter(request, prefix="client")).select_related("workflow"),
             pk=event_id,
-            client=request.user,
         )
         return Response(EventDetailSerializer(event).data)

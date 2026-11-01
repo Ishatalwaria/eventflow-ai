@@ -12,7 +12,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.authentication import APIClientAuthentication
+from apps.common.scope import resolve_client_filter
 from apps.events.models import Event
 from apps.processing.models import OutboxMessage
 from apps.workflows.models import Workflow, WorkflowAttempt
@@ -35,7 +35,6 @@ class AnalyticsUnavailable(APIException):
 
 
 class LifecycleAnalyticsView(APIView):
-    authentication_classes = [APIClientAuthentication]
     permission_classes = [IsAuthenticated, CanViewAnalytics]
 
     @extend_schema(
@@ -103,9 +102,8 @@ class LifecycleAnalyticsView(APIView):
 
 
 class TenantLifecycleAnalyticsView(APIView):
-    """Current-state analytics, scoped to the authenticated API client."""
+    """Current-state analytics, scoped to the authenticated API client or user workspace."""
 
-    authentication_classes = [APIClientAuthentication]
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
@@ -121,10 +119,9 @@ class TenantLifecycleAnalyticsView(APIView):
         start = timezone.make_aware(datetime.combine(date_from, time.min), tz)
         end = timezone.make_aware(datetime.combine(date_to + timedelta(days=1), time.min), tz)
 
-        events = Event.objects.filter(
-            client=request.user, received_at__gte=start, received_at__lt=end
-        )
-        workflows = Workflow.objects.filter(event__client=request.user)
+        client_filter = resolve_client_filter(request, prefix="client")
+        events = Event.objects.filter(client_filter, received_at__gte=start, received_at__lt=end)
+        workflows = Workflow.objects.filter(resolve_client_filter(request, prefix="event__client"))
         terminal = workflows.filter(
             state__in=(
                 Workflow.State.SUCCEEDED,
@@ -141,7 +138,7 @@ class TenantLifecycleAnalyticsView(APIView):
         terminal_count = success_count + failure_count
         retries = (
             WorkflowAttempt.objects.filter(
-                workflow__event__client=request.user,
+                resolve_client_filter(request, prefix="workflow__event__client"),
                 started_at__gte=start,
                 started_at__lt=end,
                 outcome=WorkflowAttempt.Outcome.RETRYING,
@@ -154,7 +151,7 @@ class TenantLifecycleAnalyticsView(APIView):
         )
         errors = (
             WorkflowAttempt.objects.filter(
-                workflow__event__client=request.user,
+                resolve_client_filter(request, prefix="workflow__event__client"),
                 started_at__gte=start,
                 started_at__lt=end,
                 outcome__in=(WorkflowAttempt.Outcome.FAILED, WorkflowAttempt.Outcome.DEAD_LETTERED),
@@ -166,7 +163,7 @@ class TenantLifecycleAnalyticsView(APIView):
         )
         stage_totals = (
             WorkflowAttempt.objects.filter(
-                workflow__event__client=request.user,
+                resolve_client_filter(request, prefix="workflow__event__client"),
                 started_at__gte=start,
                 started_at__lt=end,
                 outcome__in=(
@@ -192,7 +189,8 @@ class TenantLifecycleAnalyticsView(APIView):
         )
         latest = events.aggregate(latest=Max("received_at"))["latest"]
         percentiles = None
-        if connection.vendor == "postgresql":
+        matching_client_ids = list(Event.objects.filter(client_filter).values_list("client_id", flat=True).distinct())
+        if connection.vendor == "postgresql" and matching_client_ids:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """SELECT percentile_cont(ARRAY[0.50, 0.95, 0.99])
@@ -201,14 +199,14 @@ class TenantLifecycleAnalyticsView(APIView):
                            workflows_workflow.started_at)) * 1000)
                        FROM workflows_workflow
                        JOIN events_event ON events_event.id = workflows_workflow.event_id
-                       WHERE events_event.client_id = %s
+                       WHERE events_event.client_id = ANY(%s::uuid[])
                          AND workflows_workflow.state IN (%s, %s, %s)
                          AND workflows_workflow.finished_at >= %s
                          AND workflows_workflow.finished_at < %s
                          AND workflows_workflow.started_at IS NOT NULL
                          AND workflows_workflow.finished_at IS NOT NULL""",
                     [
-                        request.user.pk,
+                        matching_client_ids,
                         Workflow.State.SUCCEEDED,
                         Workflow.State.FAILED,
                         Workflow.State.DEAD_LETTERED,
@@ -216,7 +214,9 @@ class TenantLifecycleAnalyticsView(APIView):
                         end,
                     ],
                 )
-                percentiles = cursor.fetchone()[0]
+                res = cursor.fetchone()
+                if res:
+                    percentiles = res[0]
         payload = {
             "date_from": date_from,
             "date_to": date_to,
@@ -260,14 +260,14 @@ class TenantLifecycleAnalyticsView(APIView):
 
 
 class OverviewView(APIView):
-    authentication_classes = [APIClientAuthentication]
     permission_classes = [IsAuthenticated]
 
     @extend_schema(responses={200: OverviewSerializer})
     def get(self, request):
-        client = request.user
-        events = Event.objects.filter(client=client)
-        workflows = Workflow.objects.filter(event__client=client)
+        client_filter = resolve_client_filter(request, prefix="client")
+        wf_filter = resolve_client_filter(request, prefix="event__client")
+        events = Event.objects.filter(client_filter)
+        workflows = Workflow.objects.filter(wf_filter)
         state_counts = {state: 0 for state, _label in Workflow.State.choices}
         state_counts.update(
             {
@@ -293,25 +293,28 @@ class OverviewView(APIView):
             .order_by("minute")
         )
         average_latency = None
-        if connection.vendor == "postgresql":
+        matching_client_ids = list(events.values_list("client_id", flat=True).distinct())
+        if connection.vendor == "postgresql" and matching_client_ids:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """SELECT AVG(EXTRACT(EPOCH FROM
                        (workflows_workflow.finished_at - workflows_workflow.started_at)) * 1000)
                        FROM workflows_workflow
                        JOIN events_event ON events_event.id = workflows_workflow.event_id
-                       WHERE events_event.client_id = %s
+                       WHERE events_event.client_id = ANY(%s::uuid[])
                          AND workflows_workflow.state IN (%s, %s, %s)
                          AND workflows_workflow.started_at IS NOT NULL
                          AND workflows_workflow.finished_at IS NOT NULL""",
                     [
-                        client.pk,
+                        matching_client_ids,
                         Workflow.State.SUCCEEDED,
                         Workflow.State.FAILED,
                         Workflow.State.DEAD_LETTERED,
                     ],
                 )
-                average_latency = cursor.fetchone()[0]
+                res = cursor.fetchone()
+                if res:
+                    average_latency = res[0]
         recent_events = [
             {
                 "id": event.id,
@@ -335,7 +338,7 @@ class OverviewView(APIView):
             .annotate(attempt_count=Count("attempts"))
             .order_by("-created_at", "id")[:6]
         )
-        outbox = OutboxMessage.objects.filter(event__client=client)
+        outbox = OutboxMessage.objects.filter(wf_filter)
         payload = {
             "generated_at": generated_at,
             "event_count": events.count(),

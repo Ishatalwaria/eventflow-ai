@@ -6,10 +6,11 @@ from django.utils import timezone
 from .models import APIClient
 
 
-def create_api_client(name, *, can_view_analytics=False):
+def create_api_client(name, *, owner=None, can_view_analytics=False):
     secret = secrets.token_urlsafe(32)
     client = APIClient.objects.create(
         name=name,
+        owner=owner,
         secret_hash=make_password(secret),
         can_view_analytics=can_view_analytics,
     )
