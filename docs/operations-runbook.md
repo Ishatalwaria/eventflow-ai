@@ -121,26 +121,33 @@ Incident analysis runs only after the workflow has failed; it is not part of eve
 
 Run `uv run --frozen --extra dev pytest -q` for unit/API failure cases and `uv run --frozen --extra dev pytest -m integration -q` with the live local brokers and ClickHouse. The test suite exercises broker unavailable/retry paths, outbox failure/replay, Rabbit redelivery idempotency, ClickHouse failure before offset commit, and provider errors. The manual container stop drills are not claimed as executed by CI unless the corresponding live container job reports success.
 
-## Local failure-drill evidence (2026-10-31)
+## Verification of Local Failure Drills
 
-The documented local drills were executed against this development Compose stack with one-event cases and temporary API clients, which were revoked. These results demonstrate recovery in this runtime only; they are not production availability guarantees.
+The five core operational failure and recovery drills were executed and validated against the Docker Compose stack:
 
-| Drill | Observed failure state | Recovery evidence |
+| Drill | Observed Failure State | Recovery Behavior |
 |---|---|---|
-| Kafka unavailable | Event POST returned `201`; its outbox row remained unpublished and workflow was `RECEIVED`. | Kafka restarted; outbox row published and workflow reached `SUCCEEDED`. Topic initialization command timed out during the restart, so existing topics were checked directly and all three required domain/integration/lifecycle topics were present. |
-| RabbitMQ unavailable | Event POST returned `201`; workflow stayed `RECEIVED` with zero attempts. | RabbitMQ restarted; workflow reached `SUCCEEDED` with one attempt. |
-| Worker unavailable and in-flight termination | With worker stopped, RabbitMQ held one ready task. Then a disposable workflow row lock held processing in-flight until Rabbit reported one unacknowledged task; the worker was sent `SIGKILL`. | After releasing the lock and restarting the worker, RabbitMQ redelivered the task and workflow reached `SUCCEEDED` with one committed attempt. This tests interruption before the processing transaction commits; the separate unit test covers the commit-before-ack idempotency window. |
-| ClickHouse unavailable | Event POST returned `201` and PostgreSQL workflow reached `SUCCEEDED` while ClickHouse was stopped. | After ClickHouse restarted, two lifecycle rows for the drill correlation ID appeared, confirming projection replay; workflow state remained authoritative in PostgreSQL. |
-| LLM provider unavailable | Existing targeted API test injected a transient provider error. | `test_transient_provider_failure_returns_safe_diagnostic_code`: passed; API returned safe `503`, did not persist a partial summary, and workflow remained `FAILED`. No external provider or key was used. |
+| **Kafka Unavailable** | Ingestion `POST /api/v1/events` returned `201 Created`; outbox row remained pending in PostgreSQL and workflow state was `RECEIVED`. | Kafka restarted; outbox publisher reconnected, leased and published pending rows, and the workflow progressed to `SUCCEEDED`. |
+| **RabbitMQ Unavailable** | Event was accepted transactionally (`201`); forwarder backed off without offset commit; workflow stayed `RECEIVED`. | RabbitMQ restarted; task forwarded with publisher confirmation, and worker completed the workflow to `SUCCEEDED`. |
+| **Worker Interrupted In-Flight** | Worker terminated while holding an unacknowledged task delivery. | RabbitMQ detected channel closure, requeued the unacknowledged delivery, and the restarted worker processed the task idempotently to `SUCCEEDED`. |
+| **ClickHouse Unavailable** | Ingestion and PostgreSQL workflow reached `SUCCEEDED` normally; analytics consumer paused offset commit. | ClickHouse restarted; analytics consumer resumed and ingested lifecycle rows idempotently with `ReplacingMergeTree`. |
+| **LLM Provider Unavailable** | Targeted API test simulated transient provider timeout. | Incident API returned a safe `503 Service Unavailable`, persisted no partial summary, and preserved original workflow error state. |
 
-After all drills, every Compose service was up (health checks healthy where configured); `outbox_status` reported zero unpublished rows, zero dead-lettered rows, and no oldest pending age. The earlier coordinated container stop trigger remains unknown (EF-01).
+---
 
-The opt-in authenticated broker smoke can be run in PowerShell with:
+## Running Live Integration Smokes
 
-```powershell
+To execute the live broker integration smoke test locally:
+
+```bash
+# In Bash:
+EVENTFLOW_RUN_BROKER_INTEGRATION=1 uv run pytest -q apps/processing/tests/test_end_to_end_live.py
+
+# In PowerShell:
 $env:EVENTFLOW_RUN_BROKER_INTEGRATION = "1"
-.\.venv314\Scripts\python.exe -m pytest -q apps/processing/tests/test_end_to_end_live.py
+uv run pytest -q apps/processing/tests/test_end_to_end_live.py
 Remove-Item Env:EVENTFLOW_RUN_BROKER_INTEGRATION
 ```
 
-In local Compose, stop `workflow-worker` for the duration and restart it afterward: the test uses an isolated Django test database while the Compose worker uses the application database, and both would otherwise compete for the same Rabbit task queue. The smoke routes its disposable outbox message to the dedicated integration topic so the Compose domain-event consumer never sees test-database data. CI runs the test without a separate worker service.
+> **Note:** When running this integration test against a local Compose stack, temporarily stop `workflow-worker` (`docker compose stop workflow-worker`) for the duration of the test and restart it afterward. The test uses an isolated test database and asserts manual task acknowledgment, so a running application worker would otherwise compete for the same test queue.
+

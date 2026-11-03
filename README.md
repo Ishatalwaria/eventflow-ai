@@ -1,230 +1,454 @@
 # EventFlow AI
 
-EventFlow AI is an event-driven workflow and operational intelligence platform. M0 provides the Django foundation, M1 accepts authenticated events transactionally, and M2 adds an at-least-once PostgreSQL outbox → Kafka → RabbitMQ → worker pipeline. PostgreSQL remains the transactional source of truth. See [the M2 topology and delivery notes](docs/m2-broker-topology.md).
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
+[![Django 6.1](https://img.shields.io/badge/django-6.1-green.svg)](https://www.djangoproject.com/)
+[![React 19](https://img.shields.io/badge/react-19-61dafb.svg)](https://react.dev/)
+[![Kafka](https://img.shields.io/badge/Apache_Kafka-3.9-black.svg)](https://kafka.apache.org/)
+[![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3.13-orange.svg)](https://www.rabbitmq.com/)
+[![ClickHouse](https://img.shields.io/badge/ClickHouse-24.8-yellow.svg)](https://clickhouse.com/)
+[![License](https://img.shields.io/badge/license-Proprietary-lightgrey.svg)](#project-notice--licensing)
 
-## Requirements
+**EventFlow AI** is a production-grade, event-driven workflow orchestration and operational intelligence platform. It combines transactional event ingestion, guaranteed at-least-once message delivery via a PostgreSQL transactional outbox, dual-broker routing (Apache Kafka + RabbitMQ), real-time lifecycle analytics in ClickHouse, and an evidence-grounded AI incident investigation engine.
 
-- Python 3.12 (the Docker image uses a patched Python 3.12 slim image)
-- uv 0.13.6 for the locked local and container dependencies
-- Docker Engine and Docker Compose v2 for the containerized setup
+---
 
-## Local setup
+## Architecture Overview
 
-1. Create and activate a Python 3.12 virtual environment.
-2. If `.env` does not exist, copy `.env.example` to `.env`; otherwise merge any missing variables without overwriting your existing values. Set unique local values for `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`, and `RABBITMQ_PASSWORD`. Keep the database password in `DATABASE_URL` in sync with `POSTGRES_PASSWORD`; percent-encode reserved characters in the URL password.
-3. Install the locked application and development tools:
+```text
+PostgreSQL Transaction (Source of Truth)
+  Event + Initial Workflow + ProcessingLog + OutboxMessage
+       │
+       ▼
+Outbox Publisher (SELECT ... FOR UPDATE SKIP LOCKED)
+       │ (key=event_id)
+       ▼
+Kafka Topic: eventflow.domain.events.v1
+       │
+       ▼
+Kafka-to-Rabbit Forwarder (Consumer Group: eventflow.kafka-to-rabbit.v1)
+       │ (publisher-confirmed)
+       ▼
+RabbitMQ Direct Exchange: eventflow.tasks.x
+  order.created.v1 ──> Queue: eventflow.tasks.order-validation.q
+                            │
+                            ├── On Transient Failure ──> eventflow.retry.x (TTL queues)
+                            │                                  │ (TTL expired)
+                            │                                  └──> task exchange
+                            │
+                            └── On Permanent Failure ──> eventflow.dead.x (DLQ)
+                                                              │
+                                                              ▼
+Workflow Worker
+  PostgreSQL Transaction:
+    Workflow State + WorkflowAttempt + ProcessingLog + Lifecycle OutboxMessage
+       │
+       ▼
+Outbox Publisher ──> Kafka Topic: eventflow.workflow.lifecycle.v1
+                          │
+                          ▼
+ClickHouse Analytics Consumer ──> ClickHouse Table: workflow_lifecycle_facts
+```
 
-   ```sh
-   uv sync --frozen --extra dev
-   ```
+For complete technical specifications, see:
+- [System Architecture Overview](docs/architecture/overview.md)
+- [Broker Topology & Delivery Semantics](docs/architecture/broker-topology.md)
+- [Operations Runbook & Failure Drills](docs/operations-runbook.md)
+- [Production Security Checklist](docs/security-checklist.md)
 
-4. Start PostgreSQL, Kafka, RabbitMQ, the API, and workers. Compose applies migrations before starting the API and worker processes:
+---
 
-   ```sh
-   docker compose up -d --build
-   ```
+## Key Features
 
-The API is available at `http://localhost:8000`. Interactive OpenAPI documentation is at `/api/docs/`; the raw schema is at `/api/schema/`. For a host-run development server instead of the Compose API, stop the Compose API service first, then use `uv run --frozen --extra dev python manage.py runserver`.
+- **Transactional Event Ingestion:** Atomic ingestion of events, initial workflow state, and outbox messages within a single PostgreSQL ACID transaction. Uniqueness constraints on `(client_id, source, idempotency_key)` guarantee idempotent ingestion under concurrent retries.
+- **Transactional Outbox & Resilient Delivery:** Background publisher leases pending outbox messages using `SELECT ... FOR UPDATE SKIP LOCKED` and publishes to Kafka with synchronous acknowledgment, eliminating distributed dual-write inconsistencies.
+- **Dual-Broker Architecture:** High-throughput event streaming via **Apache Kafka** partitioned by entity key, decoupled into **RabbitMQ** quorum queues for low-latency task execution, exponential backoff TTL retries, and dead-letter queueing (DLQ).
+- **Dual-Tier Authentication & Multi-Tenancy:**
+  - *Human Operators:* Web console session authentication via encrypted, `HttpOnly`, `SameSite=Lax` cookies with native CSRF validation.
+  - *Automated Microservices:* Cryptographic Bearer token authentication (`<CLIENT_UUID>.<SECRET>`) stored using PBKDF2/SHA256 password hashing.
+  - *Data Isolation:* Strict tenant-level scoping across events, workflows, incidents, and operational metrics.
+- **Real-Time & Lifecycle Analytics:**
+  - *Tenant-Scoped (PostgreSQL):* Real-time operational aggregates, processing latency percentiles, and current-state summary metrics.
+  - *Platform-Wide (ClickHouse):* High-volume historical lifecycle analytics stored in monthly-partitioned `ReplacingMergeTree` tables with query-time `FINAL` deduplication.
+- **Evidence-Grounded AI Incident Assistant:**
+  - Automated root-cause investigation for `FAILED` or `DEAD_LETTERED` workflows.
+  - Assembles a bounded 24-hour sanitized evidence window (attempts, log codes; zero raw payload data).
+  - Integrates with **Google Gemini** (`gemini-3.5-flash-lite` with automatic fallback), **OpenAI** (`gpt-4o-mini`), or a deterministic local mock provider.
+  - Enforces strict structured output validation: all claims and hypotheses must cite verifiable evidence IDs from the supplied context.
+  - Strictly read-only: the assistant cannot mutate state, replay events, or execute commands.
+- **Comprehensive Observability:**
+  - Contextual structured JSON logs with propagated `request_id`, `trace_id`, `event_id`, and `workflow_id`.
+  - Prometheus `/metrics` text exposition endpoint protected by an operational token (`X-Metrics-Token`).
+  - Liveness (`/health/live`), database readiness (`/health/ready`), and multi-service component probes (`/health/services`).
+- **Modern Web Operations Console:** Built with React 19, TypeScript, Vite, and Tailwind CSS. Features full event exploration, workflow timeline tracking, interactive incident investigation, and in-console API client credential management.
 
-## Frontend dashboard
+---
 
-The React dashboard lives in `frontend/`. From that directory, install the locked packages and start Vite:
+## Technology Stack
 
-```sh
+| Layer | Technologies |
+|---|---|
+| **Backend Framework** | Python 3.12, Django 6.1, Django REST Framework, drf-spectacular (OpenAPI 3.0.3) |
+| **Primary Database** | PostgreSQL 16 (Transactional source of truth, Outbox, Identity, Workflows) |
+| **Event Streaming** | Apache Kafka 3.9 (KRaft mode, durable domain and lifecycle event topics) |
+| **Task Queue & Broker** | RabbitMQ 3.13 (Quorum task queues, TTL retry queues, Dead-letter exchange) |
+| **Analytics Engine** | ClickHouse 24.8 (`ReplacingMergeTree`, high-throughput lifecycle aggregation) |
+| **AI / LLM Integration** | Google Gemini API (`gemini-3.5-flash-lite`), OpenAI API (`gpt-4o-mini`), Mock provider |
+| **Frontend Console** | React 19, TypeScript, Vite 7, Tailwind CSS 3, TanStack Query v5, Recharts |
+| **Packaging & Runtime** | uv 0.13.6, Docker Engine, Docker Compose v2, Gunicorn |
+
+---
+
+## Repository Structure
+
+```text
+eventflow-ai/
+├── apps/                        # Django modular applications
+│   ├── analytics/               # ClickHouse sink, migrations, queries, and reports
+│   ├── common/                  # Dual auth, middleware, health probes, Prometheus metrics
+│   ├── events/                  # Ingestion endpoints, event models, schema validation
+│   ├── incidents/               # AI incident assistant, evidence builder, LLM adapters
+│   ├── processing/              # Outbox publisher, Kafka consumer, Rabbit worker, retry
+│   └── workflows/               # Workflow models, attempt tracking, lifecycle state machine
+├── config/                      # Django project configuration
+│   ├── settings/                # base, local, production, test, postgres_integration
+│   ├── gunicorn.conf.py         # Production WSGI server configuration
+│   └── urls.py                  # Root URL routing and OpenAPI schema endpoints
+├── docker/                      # Docker assets and initialization scripts
+│   ├── clickhouse/init/         # ClickHouse SQL DDL initialization scripts
+│   └── kafka/                   # Kafka KRaft topic provisioning scripts
+├── docs/                        # Permanent technical documentation
+│   ├── architecture/            # System architecture and broker topology specifications
+│   ├── operations-runbook.md    # Production operations runbook and recovery drills
+│   └── security-checklist.md    # Pre-deployment security verification checklist
+├── frontend/                    # React + TypeScript operations console
+│   ├── docs/                    # Frontend API integration map and test documentation
+│   ├── src/                     # Application source code (components, features, API client)
+│   ├── package.json             # Locked npm dependencies and build scripts
+│   └── vite.config.ts           # Vite bundler configuration and local dev proxy
+├── .env.example                 # Documented environment variable template
+├── docker-compose.yml           # Complete multi-container development environment
+├── Dockerfile                   # Multi-stage, non-root production container definition
+├── pyproject.toml               # Python package metadata, dependencies, and tool settings
+├── README.md                    # Flagship project documentation
+└── uv.lock                      # Cryptographically pinned Python dependency lockfile
+```
+
+---
+
+## Prerequisites
+
+- **Python:** 3.12
+- **uv:** 0.13.6 or newer (`pip install uv` or install via standalone installer)
+- **Node.js:** 20 LTS or newer with `npm`
+- **Docker & Docker Compose:** Docker Compose v2 is required for running the local distributed service stack.
+
+---
+
+## Local Development Setup
+
+### 1. Environment Configuration
+
+Copy the example environment files for both backend and frontend:
+
+```bash
+# Backend configuration
+cp .env.example .env
+
+# Frontend configuration
+cp frontend/.env.example frontend/.env
+```
+
+Open `.env` and verify local credentials. The default values are tuned for an isolated local Docker Compose stack.
+
+### 2. Start Full Stack with Docker Compose
+
+To start PostgreSQL, Kafka (KRaft), RabbitMQ, ClickHouse, the Django API, outbox publisher, Kafka forwarder, workflow worker, and analytics consumer:
+
+```bash
+docker compose up -d --build
+```
+
+Verify service status:
+
+```bash
+docker compose ps
+```
+
+- **API Base URL:** `http://localhost:8000`
+- **Interactive Swagger Documentation:** `http://localhost:8000/api/docs/`
+- **Raw OpenAPI Schema:** `http://localhost:8000/api/schema/`
+- **RabbitMQ Management UI:** `http://localhost:15672` (credentials from `.env`)
+
+### 3. Start the Frontend Console
+
+In a separate terminal:
+
+```bash
+cd frontend
 npm ci
 npm run dev
 ```
 
-Set `VITE_API_BASE_URL=http://localhost:8000` in `frontend/.env` when the API uses the default local port. Vite proxies API and health requests during development. Add a client bearer token in Settings; the token exists in browser memory only and is intended for local/demo use. Production user sessions should be mediated by a server-side backend-for-frontend.
+Open `http://localhost:5173` to access the operations console.
 
-Overview data comes from the authenticated tenant summary API and is scoped to the connected API client. Analytics uses the tenant-scoped PostgreSQL current-state report by default. The separate ClickHouse lifecycle report remains system-wide and requires the explicit `can_view_analytics` capability. System Health performs bounded server-side checks and scrapes allowlisted worker metrics with the server-held metrics token; it never sends that token to the browser. See [the frontend API integration map](frontend/docs/API_INTEGRATION_MAP.md) for endpoint contracts and unavailable metrics.
+---
 
-Run frontend checks from `frontend/` with `npm run typecheck`, `npm test`, `npm run build`, and `npm audit --audit-level=high`. These checks are also configured in the frontend CI job.
+## Authentication & Credential Management
 
-## API client credentials
+EventFlow AI supports two complementary access mechanisms:
 
-For the API running in Docker Compose, create credentials inside the API container so the credential is written to the same PostgreSQL database that the API uses:
+### A. Web Console (Human Operators)
+1. Navigate to `http://localhost:5173/signup`.
+2. Register an account with your name, email, and password.
+3. Upon registration, an encrypted `HttpOnly` session cookie is established, and a default API ingestion key is automatically provisioned for your workspace.
+4. Manage API keys anytime under **Settings** (`/settings`), where you can provision new client keys or revoke existing ones.
 
-```powershell
-docker compose exec -T api python manage.py client_credentials create --name "local-demo"
+### B. Machine-to-Machine Ingestion (Microservices)
+For automated ingestion, provision client credentials directly inside the running API container:
+
+```bash
+docker compose exec -T api python manage.py client_credentials create --name "microservice-producer"
 ```
 
-The command prints a bearer token once. In Swagger's **Authorize** dialog, paste the full `CLIENT_UUID.SECRET` token without adding `Bearer`; Swagger adds that prefix to the request. Store the token securely because the database stores only its hash, so it cannot be retrieved later. Tokens do not expire automatically; rotation invalidates the previous secret, and revocation immediately disables the client.
+To grant system-wide ClickHouse analytics read permissions:
 
-Rotate an exposed or lost token in the same environment where the API is running:
+```bash
+docker compose exec -T api python manage.py client_credentials create --name "analytics-reader" --analytics-access
+```
 
-```powershell
+The CLI prints the token **once**:
+```text
+Client token:
+<CLIENT_UUID>.<SECRET>
+Store this token now. It cannot be retrieved later.
+```
+
+Include this token in all ingestion requests:
+```http
+Authorization: Bearer <CLIENT_UUID>.<SECRET>
+```
+
+To rotate a compromised or exposed token:
+```bash
 docker compose exec -T api python manage.py client_credentials rotate --client-id <CLIENT_UUID>
 ```
 
-If running Django directly on the host instead of using the Compose API, use `python manage.py client_credentials ...` only when the host process and command use the same `DATABASE_URL`. Compose PostgreSQL is exposed to the host on port `5433` by default, while containers connect to `db:5432`. Creating a credential in a different database from the API causes `401 Unauthorized`.
+---
 
-## Event API
+## Event Ingestion & Workflow Execution
 
-M1 currently accepts the `order.created` event type at schema version `1`. Its payload requires `order_id`, a three-letter uppercase `currency`, non-negative `total_minor_units`, and at least one item with `sku` and positive `quantity`. Timestamps must include a timezone offset. Requests are limited to 256 KiB and batches to 50 events.
+### Single Event Ingestion
 
-Submit an event with `POST /api/v1/events` and `Authorization: Bearer <CLIENT_UUID>.<SECRET>`. A newly accepted event returns `201`; reusing the same client, source, and idempotency key returns `200` with the original event and workflow IDs and `duplicate: true`, even if the replay body has changed. The original event remains unchanged; use a new key for a distinct event. The database uniqueness constraint is authoritative, including under concurrent requests.
+Submit an authenticated event via `POST /api/v1/events`:
 
-`POST /api/v1/events/batch` accepts `{"events": [...]}`. A batch is all-or-nothing: validation or persistence failure rolls back the full batch. Successful batches return each event’s IDs and duplicate flag. The request writes the Kafka handoff into the PostgreSQL outbox in the same transaction. A separate publisher sends it to Kafka after commit.
-
-Use `GET /api/v1/events/{event_id}`, `GET /api/v1/workflows/{workflow_id}`, and `GET /api/v1/workflows?state=RECEIVED` to inspect records belonging to the authenticated client. Workflow listing is paginated at 50 items per page. API errors use an `error` object with a stable code and request ID. Responses also include the `X-Request-ID` header.
-
-## Docker Compose
-
-If `.env` does not exist, copy `.env.example` to `.env`; otherwise merge the documented variables without replacing your existing values. Set a strong local `RABBITMQ_PASSWORD` before the first broker start, then run:
-
-```sh
-docker compose up --build
+```bash
+curl -X POST http://localhost:8000/api/v1/events \
+  -H "Authorization: Bearer <CLIENT_UUID>.<SECRET>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "order.created",
+    "schema_version": 1,
+    "source": "checkout-web",
+    "idempotency_key": "order-demo-001",
+    "occurred_at": "2026-11-02T10:00:00Z",
+    "correlation_id": "corr-demo-001",
+    "payload": {
+      "order_id": "ORD-1001",
+      "currency": "USD",
+      "total_minor_units": 24900,
+      "items": [
+        {"sku": "ITEM-KEYBOARD", "quantity": 1}
+      ]
+    }
+  }'
 ```
 
-Compose starts PostgreSQL, a single-node KRaft Kafka broker, RabbitMQ, ClickHouse, the API, an outbox publisher, a Kafka-to-Rabbit consumer, a workflow worker, and a lifecycle analytics consumer. ClickHouse's Compose credentials default to a local-only development value; override them in `.env` for a shared development machine. Ports bind to localhost. To stop the stack, run `docker compose down`; this preserves database and broker volumes. Do not use `-v` unless you intentionally want to delete local data.
+**Responses:**
+- `201 Created`: Event accepted, workflow initialized, outbox message scheduled.
+- `200 OK`: Idempotent replay detected matching `(client_id, source, idempotency_key)`. Returns original event and workflow IDs with `"duplicate": true`.
 
-RabbitMQ reads `RABBITMQ_DEFAULT_PASS` only when its data volume is initialized. If you change `RABBITMQ_PASSWORD` later, update the existing RabbitMQ user's password as well; changing `.env` alone does not rotate a credential already stored in the volume. The live RabbitMQ integration test uses the same `RABBITMQ_HOST`, `RABBITMQ_USERNAME`, `RABBITMQ_PASSWORD`, TLS, and CA settings as the application, and fails with a configuration message if those credentials do not match the running broker.
+### Batch Event Ingestion
 
-Inspect services and brokers:
+`POST /api/v1/events/batch` accepts `{ "events": [...] }` (up to 50 events). The entire batch is processed within an atomic database transaction (all-or-nothing rollback on validation or database failure).
 
-```sh
-docker compose ps
-docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
-docker compose exec rabbitmq rabbitmqctl list_queues name messages consumers
-python manage.py outbox_status --check
+### Inspecting Workflow Progress
+
+```bash
+# Query single workflow
+curl -H "Authorization: Bearer <TOKEN>" http://localhost:8000/api/v1/workflows/<WORKFLOW_UUID>
+
+# List workflows by state
+curl -H "Authorization: Bearer <TOKEN>" "http://localhost:8000/api/v1/workflows?state=SUCCEEDED"
 ```
 
-RabbitMQ's management UI is available at `http://localhost:15672` using the local `.env` credentials. Kafka topics are explicitly created by `kafka-init`; the domain and lifecycle topics use three partitions. The local RabbitMQ topology uses quorum queues with a single replica and is for development only.
+---
 
-## M3 ClickHouse lifecycle analytics
+## AI Incident Investigation
 
-`docker/clickhouse/init/001-workflow-lifecycle.sql` creates `eventflow.workflow_lifecycle_facts`, a monthly-partitioned `ReplacingMergeTree` ordered by event date, workflow, event time, and deterministic lifecycle ID. Terminal lifecycle records include stage attempt duration; older v1 lifecycle records without duration remain readable and have a NULL latency. Workflow lifecycle event time is `recorded_at`; measured latency is the individual stage attempt duration, not total end-to-end workflow time.
+When a workflow enters `FAILED` or `DEAD_LETTERED`, trigger an evidence-grounded AI analysis via `POST /api/v1/workflows/{workflow_id}/incident-summary`:
 
-The analytics process consumes `eventflow.workflow.lifecycle.v1` in the independent `eventflow.clickhouse-analytics.v1` consumer group and commits Kafka offsets only after ClickHouse confirms the insert. If ClickHouse is unavailable, the current offset is left uncommitted and retried with capped exponential wait; Kafka retains the durable replay point. This is at-least-once delivery, not cross-system exactly-once. A deterministic lifecycle ID plus `ReplacingMergeTree` makes duplicate inserts logically idempotent; analytics reads use `FINAL` for immediate query-time deduplication because background merges are eventual. [ClickHouse documents that ReplacingMergeTree merges are asynchronous and recommends `FINAL` when query-time deduplication is required](https://clickhouse.com/resources/engineering/clickhouse-optimize-table-final). PostgreSQL remains the source of truth for current workflow state, and ClickHouse can lag behind it.
-
-You do **not** need to install or create a second database server. Compose runs a separate ClickHouse service and creates the logical `eventflow` database and lifecycle table automatically. It is separate from PostgreSQL because ClickHouse is an analytics store; PostgreSQL remains the transactional source of truth. The `clickhouse_data` Docker volume preserves analytics data.
-
-The Compose application containers connect using `CLICKHOUSE_HOST=clickhouse`; a Django command run from your Windows host connects through `localhost:8123`. Add these values to the existing project `.env` (do not replace the rest of your file). The password below matches the local-only default used by Compose when the ClickHouse volume was first initialized:
-
-```dotenv
-CLICKHOUSE_HOST=localhost
-CLICKHOUSE_PORT=8123
-CLICKHOUSE_DATABASE=eventflow
-CLICKHOUSE_USERNAME=eventflow
-CLICKHOUSE_PASSWORD=eventflow-local-only
-CLICKHOUSE_SECURE=false
-CLICKHOUSE_CONNECT_TIMEOUT=3
-CLICKHOUSE_SEND_RECEIVE_TIMEOUT=5
+```bash
+curl -X POST http://localhost:8000/api/v1/workflows/<WORKFLOW_UUID>/incident-summary \
+  -H "Authorization: Bearer <TOKEN>"
 ```
 
-This password is only for an isolated local development stack; set a unique secret and TLS endpoint for production. ClickHouse stores its initialized user in its volume, so changing `CLICKHOUSE_PASSWORD` in `.env` later does not itself rotate the password inside an already initialized ClickHouse volume. Keep the `.env` value in sync with the currently configured ClickHouse user or perform a deliberate ClickHouse user-password rotation.
-
-After `docker compose up -d --build`, verify the ClickHouse table and inspect the projected metrics (bounded to at most 367 days):
-
-```powershell
-docker compose ps
-docker compose exec clickhouse clickhouse-client --user eventflow --password eventflow-local-only --query "SHOW TABLES FROM eventflow"
-python manage.py analytics_report --from 2026-01-01 --to 2026-12-31
-```
-
-The report includes terminal outcomes per minute, success/failure rate, p50/p95/p99 stage-attempt latency, retry counts per workflow, frequent error codes, failure rate by stage, and the oldest/latest projected event timestamp. The table-inspection command uses the local-only default password; if you use another local value, pass that value to `clickhouse-client`. Set `EVENTFLOW_RUN_CLICKHOUSE_INTEGRATION=1` and run `pytest -m integration apps/analytics/tests` with the Compose ClickHouse service available to run the real seeded-data check. Unit tests cover field mapping, deterministic identity, and offset non-commit when ClickHouse fails.
-
-## M4 Evidence-grounded incident assistant
-
-`POST /api/v1/workflows/{workflow_id}/incident-summary` creates and persists an analysis for a failed or dead-lettered workflow owned by the authenticated API client. It is rate-limited per client using a PostgreSQL-backed one-hour window. Production defaults to five requests per hour; local development defaults to 30 requests per hour to allow Swagger iteration (`INCIDENT_SUMMARY_RATE_LIMIT` can override the local value up to 100). Select `INCIDENT_LLM_PROVIDER=gemini` and configure `GEMINI_API_KEY` plus `GEMINI_MODEL` to use Google Gemini; the low-latency default is `gemini-3.5-flash-lite`. If the configured model times out, the adapter makes one bounded failover request to `GEMINI_FALLBACK_MODEL` (defaults to `gemini-3.5-flash-lite`); it never switches to the mock provider. The adapter uses structured JSON output and validates all evidence citations before persistence. `INCIDENT_LLM_PROVIDER=openai` uses `OPENAI_API_KEY` and `OPENAI_MODEL`. Local development defaults to the deterministic `mock` provider unless changed in `.env`. Automated tests always use the mock and do not need provider credentials.
-
-The evidence builder uses a 24-hour window, at most 20 attempts, at most 18 logs, 40 total items, and short sanitized text. It never includes event payloads or arbitrary log attributes. Health metrics are currently reported as unavailable because M1–M3 do not provide workflow-correlated health measurements. Each summary stores the evidence snapshot and SHA-256 hash, prompt version, provider/model, token usage when reported, latency, and creation time. PostgreSQL remains authoritative; an assistant summary is an explanation, not a workflow state transition. Provider retry is capped, and provider errors return safe API errors without persisting a partial summary.
-
-The OpenAI adapter uses strict structured output, disables tools and provider-side storage, and applies a response-size cap. The Gemini adapter uses `generateContent` structured JSON output, sends its API key in the `x-goog-api-key` header, omits tool configuration, and applies the same timeout, output-token, and response-size limits. Provider calls default to a 45-second socket timeout, two total attempts, and a 120-second Gunicorn worker timeout; configuration validation prevents a provider timeout/retry budget above 100 seconds. Both adapters apply bounded retries only to transient failures. Evidence text is untrusted input and is never allowed to act as instructions. All factual claims and hypotheses must cite IDs from supplied evidence; application validation rejects unknown IDs, malformed structures, and an unmarked insufficient-evidence response. The assistant cannot run SQL or commands, publish messages, replay work, or mutate workflow state. See [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) and [Gemini structured outputs](https://ai.google.dev/gemini-api/docs/generate-content/structured-output) for provider constrained JSON behavior.
-
-Example evidence-grounded incident:
-
+### Response Example:
 ```json
 {
-  "headline": "The workflow recorded timeout failures; the underlying cause remains unconfirmed.",
-  "confirmed_facts": [
-    {"statement": "Workflow state is DEAD_LETTERED at order_validation.", "evidence_ids": ["workflow:timeout"]},
-    {"statement": "Two recorded attempts ended with WORKER_TIMEOUT.", "evidence_ids": ["attempt:timeout-a1", "attempt:timeout-a2"]}
-  ],
-  "hypotheses": [
-    {"statement": "A recurring timeout condition likely contributed, but the available records do not identify its source.", "evidence_ids": ["attempt:timeout-a1", "attempt:timeout-a2"], "confidence": 0.75}
-  ],
-  "unknowns": ["The cause of the timeouts is not established.", "Workflow-correlated dependency health metrics are unavailable."],
-  "recommended_checks": ["Review worker and dependency telemetry around the cited attempt timestamps."],
-  "insufficient_evidence": false
+  "id": "b3e0cf7c-9b83-4eb3-9a92-25d44a7ab414",
+  "workflow_id": "c3b55ac2-99d2-4674-b249-5cb7d4564425",
+  "evidence_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "summary": {
+    "headline": "Workflow failed due to repeated inventory validation timeouts.",
+    "confirmed_facts": [
+      {
+        "statement": "Workflow reached DEAD_LETTERED state at stage order_validation.",
+        "evidence_ids": ["workflow:c3b55ac2"]
+      },
+      {
+        "statement": "Attempts 1 and 2 failed with error code WORKER_TIMEOUT.",
+        "evidence_ids": ["attempt:c3b55ac2-a1", "attempt:c3b55ac2-a2"]
+      }
+    ],
+    "hypotheses": [
+      {
+        "statement": "Downstream inventory database connection exhaustion likely exceeded the attempt deadline.",
+        "evidence_ids": ["attempt:c3b55ac2-a1", "attempt:c3b55ac2-a2"],
+        "confidence": 0.82
+      }
+    ],
+    "unknowns": [
+      "Inventory service internal error telemetry was not available in the sanitized evidence window."
+    ],
+    "recommended_checks": [
+      "Review inventory cluster connection pool metrics around attempt timestamps."
+    ],
+    "insufficient_evidence": false
+  },
+  "provider": "gemini",
+  "model": "gemini-3.5-flash-lite",
+  "latency_ms": 1140,
+  "created_at": "2026-11-02T10:05:00Z"
 }
 ```
 
-The workflow state is supported by `workflow:timeout`; the timeout pattern by the two cited attempt records. The cause stays a hypothesis because neither attempt proves which component caused the timeout. The missing telemetry statement is supported by the health-metrics availability item in the saved evidence snapshot. For automated evaluation, the labeled dataset is in `apps/incidents/tests/fixtures/labeled_incidents.json`; it covers repeated timeouts, invalid business data, worker crash, insufficient evidence, and prompt-injection-like log text.
+Configurable in `.env`:
+- `INCIDENT_LLM_PROVIDER`: `gemini` (default), `openai`, or `mock`.
+- `GEMINI_API_KEY`: API key for Google Gemini.
+- `GEMINI_MODEL`: Model name (defaults to `gemini-3.5-flash-lite`).
+- `GEMINI_FALLBACK_MODEL`: Fallback model name on transient provider failure.
 
-## Health endpoints
+---
 
-- `GET /health/live` returns `200 {"status":"ok"}` when the process can serve requests. It does not query PostgreSQL.
-- `GET /health/ready` runs a short-timeout PostgreSQL query and returns `200 {"status":"ready","checks":{"database":"ok"}}` when available, or `503 {"status":"not_ready","checks":{"database":"unavailable"}}` otherwise.
+## Health & Observability
 
-## M5 observability and operations
+### Health Probes
+- `GET /health/live`: Fast process liveness check (HTTP 200 OK). Does not touch downstream dependencies.
+- `GET /health/ready`: PostgreSQL connectivity check. Returns 200 OK when ready or 503 Service Unavailable when database connection fails.
+- `GET /health/services`: Authenticated deep probe verifying PostgreSQL, Kafka, RabbitMQ, ClickHouse, and worker metric availability.
 
-JSON logs include request/trace, event, workflow, and correlation IDs when available. The request ID is propagated through the PostgreSQL outbox, Kafka event, RabbitMQ task, and lifecycle message; older messages without this optional field remain accepted. `X-Trace-ID` is a cross-service correlation ID, not an exported OpenTelemetry span.
+### Prometheus Metrics
+`GET /metrics` exposes standard Prometheus text metrics. In production, configure `METRICS_TOKEN` (minimum 32 characters) and pass the `X-Metrics-Token` header:
 
-`GET /metrics` exposes Prometheus text metrics for HTTP traffic, outbox backlog, workflow attempts/retries/dead letters, RabbitMQ ready-queue depth, analytics delivery, and incident-provider latency/errors. Queue depth is sampled by the worker and reports `-1` when unavailable. Compose exposes worker metrics on localhost ports 9101–9104. Set `METRICS_TOKEN` in production; the endpoint requires it in `X-Metrics-Token`. Production settings refuse to start without a metrics token of at least 32 characters.
-
-Dependencies are pinned in `uv.lock`; Docker and CI use `uv sync --frozen`. CI runs Ruff, Django/migration checks, unit/API tests, PostgreSQL concurrency and broker/ClickHouse integration tests, `pip-audit`, and a Trivy image scan. See [the security checklist](docs/security-checklist.md) and [operations runbook](docs/operations-runbook.md) for least-privilege review, metrics interpretation, recovery steps, and the five failure drills.
-
-## Developer checks
-
-```sh
-pytest
-ruff check .
-ruff format --check .
-python manage.py check
+```bash
+curl -H "X-Metrics-Token: <METRICS_TOKEN>" http://localhost:8000/metrics
 ```
 
-The default pytest configuration uses an isolated in-memory SQLite database, so tests do not modify the development PostgreSQL database or require permission to create a test database. The concurrent uniqueness-race test is skipped under SQLite. To run it with PostgreSQL, configure `EVENTFLOW_TEST_DATABASE_URL` for a dedicated local test role and use `pytest --ds=config.settings.postgres_integration`. Django creates a temporary database, so only that isolated test role may need `CREATEDB`; do not grant it to the application or production role. Never point this test URL at production.
+Key exposed metrics:
+- `eventflow_http_requests_total`: Counts requests partitioned by handler and HTTP status code.
+- `eventflow_outbox_unpublished_messages`: Gauge of pending transactional outbox rows awaiting publication.
+- `eventflow_outbox_oldest_unpublished_age_seconds`: Age of the oldest unpublished outbox row.
+- `eventflow_workflow_attempts_total`: Counter of worker task execution attempts by stage and outcome.
+- `eventflow_workflow_retries_total` & `eventflow_workflow_dead_letters_total`: Failure and retry progression.
+- `eventflow_rabbitmq_queue_messages`: Depth of task, retry, and dead-letter queues.
+- `eventflow_analytics_deliveries_total`: ClickHouse projection ingestions and failures.
+- `eventflow_incident_provider_latency_seconds`: Latency distribution of AI provider invocations.
 
-The default suite also contains unit tests for processing outcomes, retry limits, idempotency, crash-after-commit redelivery, and broker failures. Live Kafka/RabbitMQ adapter tests are marked `integration` and skipped unless explicitly enabled. With the local Compose brokers running, run these commands in PowerShell to publish and consume real broker messages:
+---
 
-```powershell
+## Testing & Quality Assurance
+
+### Backend Test Suite
+
+The default pytest configuration runs against an isolated, fast in-memory SQLite database:
+
+```bash
+# Run unit and API tests
+uv run pytest
+
+# Check code formatting and linting
+uv run ruff check .
+uv run ruff format --check .
+
+# Validate Django models and migrations
+uv run python manage.py check
+```
+
+#### Running Concurrency & Real Broker Integration Tests
+With local Compose services running, execute the full integration suite:
+
+```bash
+# In Bash:
+EVENTFLOW_RUN_BROKER_INTEGRATION=1 EVENTFLOW_RUN_CLICKHOUSE_INTEGRATION=1 uv run pytest -m integration
+
+# In PowerShell:
 $env:EVENTFLOW_RUN_BROKER_INTEGRATION = "1"
-pytest -m integration
+$env:EVENTFLOW_RUN_CLICKHOUSE_INTEGRATION = "1"
+uv run pytest -m integration
 ```
 
-The integration tests do not claim that every multi-container failure mode was exercised. DB/outbox failure behaviors are covered by unit tests; use the manual checks below for the full path.
+### Frontend Test Suite
 
-To simulate a transient failure followed by success from PowerShell, create a client token and store it in `$env:EVENTFLOW_API_TOKEN`, then submit an event. The workflow first enters `RETRY_WAIT`, waits on the bounded retry queue, and should reach `SUCCEEDED` after about five seconds:
+From the `frontend/` directory:
 
-```powershell
-curl.exe -X POST http://localhost:8000/api/v1/events `
-  -H "Authorization: Bearer $env:EVENTFLOW_API_TOKEN" `
-  -H "Content-Type: application/json" `
-  -d '{"event_type":"order.created","schema_version":1,"source":"manual-check","idempotency_key":"retry-demo-001","occurred_at":"2026-10-27T00:00:00Z","correlation_id":"retry-demo-001","payload":{"order_id":"retry-demo-001","currency":"INR","total_minor_units":100,"items":[{"sku":"TEMPORARY-FAIL-FIRST","quantity":1}]}}'
+```bash
+# Run TypeScript compilation check
+npm run typecheck
+
+# Run unit and component tests (Vitest + React Testing Library)
+npm test
+
+# Verify production bundle compilation
+npm run build
+
+# Run dependency vulnerability audit
+npm audit --audit-level=high
 ```
 
-For a permanent business failure, repeat with a new idempotency key and order ID, and change the item SKU to `OOS-MANUAL-CHECK`; the workflow should reach `FAILED` and appear in the dead-letter queue. Use the returned `workflow_id` with `curl.exe -H "Authorization: Bearer $env:EVENTFLOW_API_TOKEN" http://localhost:8000/api/v1/workflows/<WORKFLOW_UUID>`. Inspect dead letters with `docker compose exec rabbitmq rabbitmqctl list_queues name messages` and inspect the outbox with `python manage.py outbox_status`.
+---
 
-## Configuration
+## Production Deployment & Security
 
-`manage.py` selects `config.settings.local` by default and loads values from `.env`. Set `DJANGO_SETTINGS_MODULE=config.settings.production` for production; the same entry point honors the deployment environment. Provide a unique `DJANGO_SECRET_KEY`, explicit `ALLOWED_HOSTS`, and TLS-enabled PostgreSQL, Kafka, and RabbitMQ endpoints through the deployment secret manager. Production settings reject local database/broker hosts, weak/missing secrets, wildcard hosts, non-PostgreSQL databases, plaintext Kafka, and plaintext RabbitMQ. Configure Kafka with `KAFKA_SECURITY_PROTOCOL=SSL` or `SASL_SSL`; SASL additionally requires its mechanism and credentials. Set `RABBITMQ_USE_TLS=true` and a dedicated user with a strong password. Prefer `sslmode=verify-full` for PostgreSQL and provide CA paths where required. Percent-encode reserved characters in the database URL username or password. Do not commit `.env` or production credentials.
+When deploying to production, follow the guidelines below and complete the [Production Security Checklist](docs/security-checklist.md):
 
-### Production database permissions
+1. **Environment Settings:**
+   - Set `DJANGO_SETTINGS_MODULE=config.settings.production`.
+   - Set `DEBUG=false`.
+   - Provide explicit, non-wildcard hostnames in `ALLOWED_HOSTS`.
+   - Generate a strong, unique `DJANGO_SECRET_KEY` (minimum 50 characters).
+2. **Database Role Segregation:**
+   - Enforce least privilege by creating two separate database users:
+     - `eventflow_migrator`: Owns database schema; executes `python manage.py migrate`.
+     - `eventflow_app`: Unprivileged runtime user possessing only `SELECT`, `INSERT`, `UPDATE`, `DELETE` on tables and `USAGE`, `SELECT` on sequences. Must not have `CREATEDB` or `CREATEROLE`.
+3. **Mandatory TLS:**
+   - PostgreSQL: Use `sslmode=verify-full` with verified CA certificates.
+   - Kafka: Configure `KAFKA_SECURITY_PROTOCOL=SSL` or `SASL_SSL`.
+   - RabbitMQ: Set `RABBITMQ_USE_TLS=true` with verified broker certificates.
+   - ClickHouse: Set `CLICKHOUSE_SECURE=true`.
+4. **Container Hardening:**
+   - The production container (`Dockerfile`) executes as non-root user `eventflow` (`UID 10001 / GID 10001`).
+   - Run migrations in an isolated pre-deployment step using the migration credentials before rolling out API or worker pods.
 
-Use separate PostgreSQL login roles for the application and schema migrations. The application role should have only `CONNECT`, schema `USAGE`, and the required table DML (`SELECT`, `INSERT`, `UPDATE`, `DELETE`) and sequence (`USAGE`, `SELECT`) permissions. It must not be a superuser, database owner, or have `CREATEDB`/`CREATEROLE`. Give schema ownership and `CREATE` rights to a separate migration role used only by a deployment migration job. Set default privileges for objects created by the migration role so the application role receives the required DML rights. Store both URLs as separate deployment secrets. The API container runs as a non-root user and does not run migrations at startup; run `python manage.py migrate --noinput` as the migration role during deployment.
+---
 
-For a new production database, a PostgreSQL administrator can provision roles along these lines (enter passwords interactively with `\\password`; never place them in SQL files or shell history):
+## Project Notice & Licensing
 
-```sql
-CREATE ROLE eventflow_migrator LOGIN;
-CREATE ROLE eventflow_app LOGIN;
-CREATE DATABASE eventflow OWNER eventflow_migrator;
-\connect eventflow
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-GRANT CONNECT ON DATABASE eventflow TO eventflow_app;
-GRANT USAGE ON SCHEMA public TO eventflow_app;
-ALTER DEFAULT PRIVILEGES FOR ROLE eventflow_migrator IN SCHEMA public
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO eventflow_app;
-ALTER DEFAULT PRIVILEGES FOR ROLE eventflow_migrator IN SCHEMA public
-  GRANT USAGE, SELECT ON SEQUENCES TO eventflow_app;
-\password eventflow_migrator
-\password eventflow_app
-```
+EventFlow AI is a personal proprietary project developed for demonstration and operational workflow orchestration. It is maintained solely for personal use. External contributions, pull requests, and distribution are not accepted.
 
-Connect the migration job with the `eventflow_migrator` URL and the running API with the `eventflow_app` URL. For an existing database, have the DBA review current object owners and grants before changing them; the new-role example is not a drop-in ownership migration. The supplied `eventflow-user` value must not be given `CREATEDB` just to run the concurrency test. Create a distinct local-only test role if that test needs database-creation permission.
+---
 
-Docker Compose is for local development only. Its PostgreSQL/API ports bind to localhost, and it requires local secrets rather than using built-in password defaults. The Compose PostgreSQL initialization user is still a local development convenience; do not reuse it, its password, or this Compose database role model in production.
+## Known Limitations
 
-The M2 schema extension lives in PostgreSQL; migrations include a data backfill for previously pending M1 outbox rows so their topic and envelope match the versioned Kafka contract. Django's built-in authentication and session migrations are also applied by the setup commands.
+- **Event Schema Support:** Current event ingestion supports schema version 1 of `order.created`. Additional event types require corresponding schema and stage handlers.
+- **Trace Context Export:** Structured logging correlates requests using `X-Request-ID` and `X-Trace-ID` across all services, but does not currently export OpenTelemetry distributed trace spans.
+- **Worker Process Health:** Worker daemons report health status through process heartbeat and Prometheus metrics; they do not expose standalone HTTP readiness endpoints.

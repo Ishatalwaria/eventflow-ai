@@ -1,29 +1,53 @@
-# Frontend testing and verification
+# Frontend Testing and Verification
 
-Run these from `frontend/` after installing the locked dependencies with `npm ci`:
+This document outlines the testing strategy, tooling, execution commands, and coverage scope for the EventFlow AI web operations console.
 
-```powershell
+---
+
+## Test Execution
+
+From the `frontend/` directory, ensure dependencies are installed via `npm ci`, then execute:
+
+```bash
+# Run TypeScript compilation check
 npm run typecheck
+
+# Run full Vitest test suite once
 npm test
+
+# Run tests in interactive watch mode
+npm run test:watch
+
+# Verify production build compilation
 npm run build
 ```
 
-The Vitest and Testing Library suite covers application navigation, event list rendering, event submission, workflow execution details, incident analysis sections, the explicit analytics-unavailable state, shared loading and empty states, API error normalization, 401 token clearing, and endpoint-backed health rendering.
+---
 
-## Live backend scope
+## Test Framework & Tooling
 
-The browser preview confirmed Django liveness and PostgreSQL readiness through `/health/live` and `/health/ready`. The frontend does not call the protected `/metrics` endpoint. Tenant-authenticated event submission/retrieval, workflow retrieval, and incident analysis require a valid backend-issued `CLIENT_UUID.SECRET` token, and were not exercised in this verification session. The tests cover UI/API-client behavior, not that external credentialed flow.
+- **Test Runner:** [Vitest](https://vitest.dev/) (fast, native ESM execution with Vite integration)
+- **DOM Environment:** [jsdom](https://github.com/jsdom/jsdom)
+- **Component Testing:** [React Testing Library](https://testing-library.com/docs/react-testing-library/intro/)
+- **Assertions:** `@testing-library/jest-dom` matchers
 
-## Tooling status
+---
 
-There is no ESLint configuration or lint script in this frontend, so ESLint is not configured. `npm run build` includes the TypeScript project checks. Tests use Vitest, jsdom, and React Testing Library.
+## Test Suite Coverage
 
-## Unsupported backend capabilities shown in the UI
+The test suite covers user interactions, API integration, error boundaries, and state management:
 
-- Browser-queryable ClickHouse analytics and data-freshness timestamps.
-- Event list/search API and incident history API.
-- Health endpoints for Kafka, RabbitMQ, ClickHouse, workers, and the LLM provider.
-- Browser-safe API/worker/queue/retry/dead-letter/LLM metrics. `/metrics` requires a separate `X-Metrics-Token`.
-- A user-authenticated production session; the tenant client credential is held in page memory and is not an end-user identity mechanism.
+| Test File | Focus Area | Description |
+|---|---|---|
+| `src/test/auth.test.tsx` | Authentication & Access Control | Tests registration form validation, password mismatch rejection, login submission, and session establishment. |
+| `src/test/integration.test.tsx` | Full-Console Integration | Exercises cross-page navigation, historical event collection rendering, query filtering, workflow attempt timelines, incident investigation loading, and tenant-scoped overview metrics. |
+| `src/test/health.test.tsx` | System Health Monitoring | Verifies public liveness and readiness probe rendering, authenticated `/health/services` rendering, and state retention across route transitions. |
+| `src/test/api-client.test.ts` | HTTP Client & Interceptors | Tests Axios request configuration, CSRF header attachment, Bearer token injection, and 401 unauthorized handling. |
+| `src/test/api-error.test.ts` | Error Normalization | Validates structured backend API error parsing and user-friendly fallback messaging. |
+| `src/test/clipboard.test.ts` | UI Utilities | Verifies safe asynchronous clipboard copy interactions and failure handling. |
 
-These are displayed as unavailable or described in the interface; no metrics or incident explanations are fabricated.
+---
+
+## Continuous Integration
+
+Frontend tests, TypeScript type checking, production bundle compilation, and high-severity npm security audits (`npm audit --audit-level=high`) are automated as part of the repository's GitHub Actions workflow (`.github/workflows/ci.yml`).

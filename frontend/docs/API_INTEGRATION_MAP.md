@@ -1,136 +1,151 @@
-# EventFlow AI frontend API integration map
+# EventFlow AI — Frontend API Integration Map
 
-This map reflects the Django URL configuration, serializers, views, authentication, and settings in this repository. It deliberately excludes backend-internal management commands and broker protocols because the browser cannot call those as HTTP APIs.
+This document specifies the HTTP API contracts, authentication mechanisms, request/response structures, and endpoint mappings between the React frontend operations console and the Django REST backend.
 
-## API conventions
+---
 
-- `VITE_API_BASE_URL` is the API origin. In Vite development, `/api` and `/health` use a same-origin proxy to that configured URL; production requests use it directly and therefore require CORS at the serving gateway when origins differ.
-- Protected endpoints use `Authorization: Bearer <CLIENT_UUID>.<SECRET>`. The backend stores only a password hash and issues the raw token once when creating/rotating a client credential.
-- The API client token stays in JavaScript memory only and is cleared on page reload or API `401`. It is still visible to the browser owner and scripts running in the page; this is a local/development integration, not a production user-credential boundary. Analytics-enabled tokens can read system-wide aggregate data and should only be used in controlled local/demo environments; production should use a server-side backend-for-frontend and operator identity. The frontend never receives provider credentials, broker credentials, database credentials, or the metrics token.
-- JSON API errors use `{ "error": { "code": string, "message": string, "request_id": string | null, "details": object } }`. Responses include `X-Request-ID` and `X-Trace-ID`.
-- Event and workflow lists are paginated: `{ count, next, previous, results }`; default page size is 50, `page_size` is capped at 100. Event filters support `search`, `event_type`, `date_from`, and `date_to` (received date, `YYYY-MM-DD`); workflow filtering supports `state`.
-- Event JSON bodies are limited to 256 KiB. Batch requests contain 1–50 events.
-- Idempotency identity is `(API client, source, idempotency_key)`. Reusing the key returns the original event/workflow even if other request fields differ; use a new key for a distinct event.
+## Architecture & Authentication Overview
 
-## Endpoint mapping
+EventFlow AI implements a dual authentication tier:
 
-| Method | URL | Authentication | Frontend area | Request / query | Response and behavior |
-|---|---|---|---|---|---|
-| GET | `/health/live` | None | System Health | None | `200 {"status":"ok"}` if the process serves requests. Does not check dependencies. |
-| GET | `/health/ready` | None | System Health | None | `200 {"status":"ready","checks":{"database":"ok"}}` or `503 {"status":"not_ready","checks":{"database":"unavailable"}}`. Checks PostgreSQL only. |
-| GET | `/health/services` | API client bearer | System Health | None | Bounded server-side PostgreSQL/Kafka/RabbitMQ/ClickHouse probes, worker metrics endpoint status, LLM not-checked status, and an allowlisted metric summary. Metrics credentials and raw exposition remain server-side. |
-| POST | `/api/v1/events` | API client bearer | Events | One event envelope (below) | `201` for newly accepted event, `200` for idempotent duplicate. `{ event_id, workflow_id, workflow_state, duplicate }`. |
-| POST | `/api/v1/events/batch` | API client bearer | Events | `{ "events": [event envelope, ...] }`, max 50 | `200 { "results": [acceptance result, ...] }`; batch write is transactional/all-or-nothing. |
-| GET | `/api/v1/events` | API client bearer; tenant-scoped | Events | Optional `search`, `event_type`, `date_from`, `date_to`, `page`, `page_size` | Paginated event metadata with nested workflow status. Search covers event ID (exact), event type, source, idempotency key, and correlation ID. Payload and request ID are omitted from collection results. |
-| GET | `/api/v1/events/{event_id}` | API client bearer; tenant-scoped | Events | UUID path | Event detail with a nested workflow summary. `404` when missing or owned by another client. |
-| GET | `/api/v1/workflows` | API client bearer; tenant-scoped | Workflows, Overview, AI Incidents | Optional `state` from `RECEIVED`, `QUEUED`, `PROCESSING`, `RETRY_WAIT`, `SUCCEEDED`, `FAILED`, `DEAD_LETTERED`; `page`, `page_size` | Paginated workflow detail objects including attempt history. |
-| GET | `/api/v1/workflows/{workflow_id}` | API client bearer; tenant-scoped | Workflows | UUID path | Workflow detail including attempts. `404` when missing or owned by another client. |
-| GET | `/api/v1/analytics/overview` | API client bearer; tenant-scoped | Overview | None | Current PostgreSQL event/workflow counts, seven-day terminal workflow activity, recent event/workflow metadata, average end-to-end terminal workflow latency, and tenant outbox pending/dead-letter counts. `average_processing_latency_ms` is `null` when no supported PostgreSQL aggregate is available. |
-| GET | `/api/v1/analytics/tenant-lifecycle` | API client bearer; tenant-scoped | Analytics | Required `date_from`, `date_to` (`YYYY-MM-DD`); maximum 367 inclusive days | PostgreSQL current-state success/failure, latency percentiles on PostgreSQL, retry/error/stage aggregates, activity and freshness metadata scoped to the authenticated API client. |
-| POST | `/api/v1/workflows/{workflow_id}/incident-summary` | API client bearer; tenant-scoped; throttled | AI Incidents | Empty body | `201` persisted incident summary; only `FAILED` or `DEAD_LETTERED` workflows are eligible. Provider outage returns `503`; invalid provider output returns `502`; other errors use the common API error envelope. |
-| GET | `/api/v1/analytics/lifecycle` | API client bearer with analytics capability | Analytics | Required `date_from`, `date_to` (`YYYY-MM-DD`); maximum 367 inclusive days | ClickHouse lifecycle metrics, generated timestamp, latest event timestamp and measured data lag. Returns `403` without explicit capability and `503` when ClickHouse data is unavailable. Results are eventually consistent with PostgreSQL. |
-| GET | `/api/v1/incidents` | API client bearer; tenant-scoped | AI Incidents | Optional `search`, `workflow_state` (`FAILED`, `DEAD_LETTERED`), `page`, `page_size` | Paginated incident metadata with incident/workflow/event IDs, headline, workflow state, provider/model and creation time. Evidence is omitted from list results. |
-| GET | `/api/v1/incidents/{incident_id}` | API client bearer; tenant-scoped | AI Incidents | UUID path | Full persisted incident summary and bounded evidence. `404` when missing or linked to another tenant. |
-| GET | `/api/schema/` | None | Developer/support | None | OpenAPI schema generated by drf-spectacular. |
-| GET | `/api/docs/` | None | Developer/support | None | Swagger UI for the schema. |
-| GET | `/metrics` | `X-Metrics-Token` required | Not integrated | None | Prometheus text format; `403` without the separate metrics token. This frontend does not collect or store this privileged token. |
-| GET | `/` | None | Not integrated | None | Redirects to Swagger UI. |
-| `/admin/` | Django admin session | Not integrated | None | Django admin, not a client-facing API. |
+1. **User Authentication (Web Console):**
+   - **Protocol:** Django Session Authentication with encrypted `HttpOnly`, `SameSite=Lax`, `Secure` cookies.
+   - **CSRF Token:** Handled transparently by Axios using standard `X-CSRFToken` headers acquired via `GET /api/v1/auth/csrf`.
+   - **Session Endpoints:** `/api/v1/auth/register`, `/api/v1/auth/login`, `/api/v1/auth/logout`, `/api/v1/auth/me`, `/api/v1/auth/password-reset`.
+   - **In-Console API Client Management:** Authenticated users can generate, inspect, and revoke ingestion client tokens directly via `/api/v1/clients`.
 
-## Event request schema
+2. **API Client Authentication (Machine Ingestion):**
+   - **Protocol:** HTTP Bearer header (`Authorization: Bearer <CLIENT_UUID>.<SECRET>`).
+   - **Target:** Used by high-throughput microservices and event producers submitting events to `/api/v1/events` and `/api/v1/events/batch`.
+   - **Console Usage:** Operators may also input an API Client token into the console Settings to inspect tenant-isolated streams or access global ClickHouse analytics when granted the `can_view_analytics` capability.
 
-The only supported event is `order.created` with `schema_version: 1`. The timestamp must include an offset or `Z`.
+3. **General Conventions:**
+   - **API Origin:** Configured in `VITE_API_BASE_URL` (defaults to `http://localhost:8000`). Vite proxies `/api` and `/health` requests during development to ensure same-origin cookie delivery.
+   - **Standard Error Envelope:**
+     ```json
+     {
+       "error": {
+         "code": "STRING_ERROR_CODE",
+         "message": "Human-readable description.",
+         "request_id": "UUID-OR-NULL",
+         "details": {}
+       }
+     }
+     ```
+   - **Correlation Headers:** Responses return `X-Request-ID` and `X-Trace-ID` for end-to-end tracing across application and worker logs.
+
+---
+
+## Comprehensive Endpoint Map
+
+| Method | Endpoint | Auth Required | Frontend Feature Area | Summary & Purpose |
+|---|---|---|---|---|
+| **GET** | `/health/live` | None (Public) | System Health | Process liveness probe. Fast 200 OK response; does not query dependencies. |
+| **GET** | `/health/ready` | None (Public) | System Health | Database readiness probe. Executes shallow PostgreSQL check. |
+| **GET** | `/health/services` | Session or API Client | System Health | Comprehensive server-side probe of PostgreSQL, Kafka, RabbitMQ, ClickHouse, and worker metric availability. |
+| **GET** | `/api/v1/auth/csrf` | None (Public) | Auth / Session | Initializes CSRF cookie and returns `{ csrfToken: string }`. |
+| **POST** | `/api/v1/auth/register` | None (Public) | Signup Page | Registers a new user, establishes session, and auto-provisions a default workspace client. |
+| **POST** | `/api/v1/auth/login` | None (Public) | Login Page | Authenticates email/password, sets HttpOnly session cookie, and returns user profile. |
+| **POST** | `/api/v1/auth/logout` | Session | Navigation / Profile | Terminates session and clears active cookies. |
+| **GET** | `/api/v1/auth/me` | Session or API Client | App Shell / State | Returns active user profile, permissions, and tenant context. |
+| **POST** | `/api/v1/auth/password-reset` | None (Public) | Forgot Password | Requests a password reset token for the specified email. |
+| **POST** | `/api/v1/auth/password-reset/confirm` | None (Public) | Reset Password | Validates reset token and sets new password. |
+| **GET** | `/api/v1/clients` | Session (User) | Settings | Lists all API ingestion clients owned by the authenticated user. |
+| **POST** | `/api/v1/clients` | Session (User) | Settings | Generates a new API client credential. Reveals the raw Bearer token once. |
+| **POST** | `/api/v1/clients/{client_id}/revoke` | Session (User) | Settings | Immediately revokes an API client credential. |
+| **POST** | `/api/v1/events` | API Client Bearer | Ingestion / Events | Ingests a single event envelope transactionally into PostgreSQL and Outbox. |
+| **POST** | `/api/v1/events/batch` | API Client Bearer | Ingestion / Events | Transactionally ingests up to 50 event envelopes in an all-or-nothing batch. |
+| **GET** | `/api/v1/events` | Session or API Client | Events Explorer | Paginated list of historical events with query filters (`search`, `event_type`, `date_from`, `date_to`). |
+| **GET** | `/api/v1/events/{event_id}` | Session or API Client | Event Detail | Detailed event metadata, payload, and nested workflow summary. |
+| **GET** | `/api/v1/workflows` | Session or API Client | Workflows Console | Paginated workflow list filtered by state (`RECEIVED`, `PROCESSING`, `SUCCEEDED`, `FAILED`, etc.). |
+| **GET** | `/api/v1/workflows/{workflow_id}` | Session or API Client | Workflow Detail | Detailed workflow record, execution timeline, and attempt history. |
+| **GET** | `/api/v1/incidents` | Session or API Client | AI Incidents | Paginated list of persisted AI incident root-cause investigations. |
+| **GET** | `/api/v1/incidents/{incident_id}` | Session or API Client | Incident Detail | Full persisted incident summary, confirmed facts, hypotheses, and evidence snapshot. |
+| **POST** | `/api/v1/workflows/{workflow_id}/incident-summary` | Session or API Client | Workflow Detail / Incidents | Generates an evidence-grounded AI incident analysis for a `FAILED` or `DEAD_LETTERED` workflow. |
+| **GET** | `/api/v1/analytics/overview` | Session or API Client | Overview Dashboard | Aggregate summary: 7-day terminal volume, event/workflow counts, latency, and outbox state. |
+| **GET** | `/api/v1/analytics/tenant-lifecycle` | Session or API Client | Analytics | Tenant-scoped PostgreSQL current-state lifecycle percentiles, retries, and success rates. |
+| **GET** | `/api/v1/analytics/lifecycle` | Capability: `can_view_analytics` | Analytics | High-volume system-wide lifecycle analytics from ClickHouse `ReplacingMergeTree`. |
+| **GET** | `/api/schema/` | None (Public) | Developer / API | Raw OpenAPI 3.0.3 specification generated by drf-spectacular. |
+| **GET** | `/api/docs/` | None (Public) | Developer / API | Interactive Swagger UI documentation. |
+| **GET** | `/metrics` | `X-Metrics-Token` | Operations Scraper | Prometheus exposition format (internal/server-side scraping only). |
+
+---
+
+## Ingestion Event Contract (`order.created` v1)
 
 ```json
 {
   "event_type": "order.created",
   "schema_version": 1,
-  "source": "checkout-web",
-  "idempotency_key": "checkout-order-123",
-  "occurred_at": "2026-10-30T10:00:00Z",
-  "correlation_id": "order-123",
+  "source": "checkout-service",
+  "idempotency_key": "checkout-tx-994821",
+  "occurred_at": "2026-11-02T10:00:00Z",
+  "correlation_id": "corr-tx-994821",
   "payload": {
-    "order_id": "order-123",
-    "currency": "INR",
-    "total_minor_units": 129900,
-    "items": [{ "sku": "SKU-001", "quantity": 1 }]
+    "order_id": "ORD-2026-11-001",
+    "currency": "USD",
+    "total_minor_units": 15000,
+    "items": [
+      {
+        "sku": "ITEM-LAPTOP-PRO",
+        "quantity": 1
+      }
+    ]
   }
 }
 ```
 
-`payload.order_id` is a string (max 128 characters), `currency` is three uppercase letters, `total_minor_units` is a non-negative integer, and `items` must contain 1–100 `{sku, quantity}` items. `sku` is max 100 characters and quantity is at least 1. Idempotency is unique per authenticated client + source + idempotency key.
-
-### Acceptance response
-
+### Response Schema (`201 Created` or `200 OK` on Idempotent Replay)
 ```json
 {
-  "event_id": "2e0cf7c9-b839-4eb3-9a92-25d44a7ab414",
-  "workflow_id": "c3b55ac2-99d2-4674-b249-5cb7d4564425",
+  "event_id": "7b5ce162-d27a-4934-8c76-26732cf31eb4",
+  "workflow_id": "c3e8006e-8212-4217-bd01-c88e7b953d68",
   "workflow_state": "RECEIVED",
   "duplicate": false
 }
 ```
 
-### Event detail response fields
+---
 
-`id`, `event_type`, `schema_version`, `source`, `idempotency_key`, `occurred_at`, `correlation_id`, `request_id`, `received_at`, `payload`, and `workflow`. The nested `workflow` has `id`, `state`, `current_stage`, `created_at`, and `updated_at`.
+## Incident Analysis Contract
 
-## Workflow response fields
+Persisted incident investigations structure findings with strict evidence citations:
 
-Workflow detail/list objects contain `id`, `event_id`, `workflow_type`, `state`, `current_stage`, `created_at`, `updated_at`, `started_at`, `finished_at`, `last_error_code`, and `attempts`. Each attempt contains `id`, `stage`, `attempt_number`, `outcome`, `started_at`, `finished_at`, `duration_ms`, `error_code`, and `error_detail`.
-
-The current processing implementation records `order_validation` as its attempt stage; its inventory check runs within that stage and is not a separate recorded stage. The frontend builds its execution timeline from returned attempts and applies display-side sanitization to attempt error text. `WorkflowAttemptSerializer` exposes no standalone processing-log query; sanitized log entries are available only when returned in incident-summary evidence.
-
-## Incident summary response fields
-
-The persisted response contains `id`, `workflow_id`, `evidence_hash`, `evidence`, `summary`, `prompt_version`, `provider`, `model`, `latency_ms`, `input_tokens`, `output_tokens`, and `created_at`. `summary` has `headline`, `confirmed_facts`, `hypotheses`, `unknowns`, `recommended_checks`, and `insufficient_evidence`. Facts/hypotheses cite evidence IDs. Tenant-scoped list/detail endpoints expose persisted summaries; evidence is omitted from list results.
-
-## Lifecycle analytics response fields
-
-`GET /api/v1/analytics/tenant-lifecycle` returns the lifecycle metrics scoped to the authenticated client from PostgreSQL current state. It is the frontend's default Analytics source and does not require the global analytics capability. `GET /api/v1/analytics/lifecycle` retains the same metrics from ClickHouse, labels them `eventually_consistent`, and aggregates all tenants; its `can_view_analytics` capability defaults to false and should remain limited to controlled operator/demo credentials. To obtain a separate local analytics reader credential, run `docker compose exec -T api python manage.py client_credentials create --name "analytics-reader" --analytics-access` and paste the one-time token into Settings. This grants access to system-wide aggregates; do not grant it to ordinary tenant clients. PostgreSQL is authoritative for current workflow state.
-
-## Error cases
-
-- `400`: validation, malformed JSON, unsupported event type/schema, invalid query filters.
-- `401`: missing or invalid client bearer token.
-- `404`: resource not found or not owned by the authenticated client.
-- `409`: incident summary requested for a workflow that has not failed.
-- `413`: event request exceeds the body size limit.
-- `429`: incident-summary throttle limit exceeded.
-- `502`: provider returned invalid/rejected output or permanent provider-side failure.
-- `503`: transient incident provider failure or readiness database failure.
-
-## Backend capabilities unavailable to the frontend
-
-1. No service-specific health API: readiness checks only PostgreSQL; Kafka, RabbitMQ, ClickHouse, workers, and the LLM provider cannot be reported as healthy/unhealthy from `/health/ready`.
-2. `/metrics` requires a separate privileged token. The browser UI does not request it or infer processing metrics from unavailable data.
-3. No API-client credential create/rotate endpoint: credentials are issued through Django management commands. For local development, users paste a previously created bearer token into Settings; this is not recommended for a production public browser app.
-4. No WebSocket/SSE API: workflow status can be refreshed by polling the workflow detail/list endpoints.
-
-## Proposed frontend structure
-
-```text
-frontend/
-  docs/API_INTEGRATION_MAP.md
-  src/
-    api/                 # Axios instance, typed endpoint methods, error handling
-    app/                 # Router, query client, auth context, page shell
-    components/          # Navigation, forms, tables, status badges, UI primitives
-    features/
-      overview/
-      events/
-      workflows/
-      incidents/
-      analytics/
-      health/
-      settings/
-    lib/                 # Formatting, validation schemas, shared types
-    styles/              # Tailwind and global styles
+```json
+{
+  "id": "e4a2c5a1-7711-4fa2-bf5a-4e4ad70c6489",
+  "workflow_id": "c3e8006e-8212-4217-bd01-c88e7b953d68",
+  "evidence_hash": "a1b2c3d4...",
+  "summary": {
+    "headline": "Workflow failed due to repeated worker timeouts during order validation.",
+    "confirmed_facts": [
+      {
+        "statement": "Workflow reached DEAD_LETTERED state at order_validation stage.",
+        "evidence_ids": ["workflow:c3e8006e"]
+      },
+      {
+        "statement": "Attempts 1 and 2 terminated with WORKER_TIMEOUT.",
+        "evidence_ids": ["attempt:c3e8006e-a1", "attempt:c3e8006e-a2"]
+      }
+    ],
+    "hypotheses": [
+      {
+        "statement": "Downstream inventory service saturation likely exceeded the 5-second socket timeout.",
+        "evidence_ids": ["attempt:c3e8006e-a1", "attempt:c3e8006e-a2"],
+        "confidence": 0.8
+      }
+    ],
+    "unknowns": [
+      "Downstream inventory service internal error logs are unavailable in the evidence context."
+    ],
+    "recommended_checks": [
+      "Review inventory API latency metrics between cited attempt intervals."
+    ],
+    "insufficient_evidence": false
+  },
+  "provider": "gemini",
+  "model": "gemini-3.5-flash-lite",
+  "latency_ms": 1120,
+  "created_at": "2026-11-02T10:05:00Z"
+}
 ```
-
-## Implementation plan
-
-1. Establish the separate Vite + React + TypeScript app and shared API/auth/query layer.
-2. Build the responsive navigation and actual-data pages for workflows, event submission/detail, AI incident creation, and health.
-3. Build analytics and settings views that clearly explain actual backend limits and configure the API URL/client token without exposing provider secrets.
-4. Run dependency install, TypeScript checks, production build, and available API connectivity checks. Keep M6 out of scope.
