@@ -17,6 +17,8 @@ const IncidentInvestigationPage = lazy(() => import("./features/incidents/Incide
 const AnalyticsPage = lazy(() => import("./features/analytics/AnalyticsPage").then((module) => ({ default: module.AnalyticsPage })));
 const HealthPage = lazy(() => import("./features/health/HealthPage").then((module) => ({ default: module.HealthPage })));
 const SettingsPage = lazy(() => import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage })));
+const InventoryPage = lazy(() => import("./features/commerce/CommercePages").then((module) => ({ default: module.InventoryPage })));
+const OrdersPage = lazy(() => import("./features/commerce/CommercePages").then((module) => ({ default: module.OrdersPage })));
 
 function NotFound() {
   return (
@@ -52,6 +54,8 @@ export default function App() {
           <Route path="events/:eventId" element={<EventDetailPage />} />
           <Route path="workflows" element={<WorkflowsPage />} />
           <Route path="workflows/:workflowId" element={<WorkflowDetailPage />} />
+          <Route path="orders" element={<OrdersPage />} />
+          <Route path="inventory" element={<InventoryPage />} />
           <Route path="incidents" element={<IncidentsPage />} />
           <Route path="incidents/id/:incidentId" element={<IncidentInvestigationPage />} />
           <Route path="incidents/workflow/:workflowId" element={<IncidentInvestigationPage />} />

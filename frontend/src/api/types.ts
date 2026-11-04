@@ -3,15 +3,18 @@ export type WorkflowState =
   | "QUEUED"
   | "PROCESSING"
   | "RETRY_WAIT"
+  | "COMPENSATING"
   | "SUCCEEDED"
   | "FAILED"
-  | "DEAD_LETTERED";
+  | "DEAD_LETTERED"
+  | "CANCELLED";
 
 export type AttemptOutcome = "STARTED" | "SUCCEEDED" | "RETRYING" | "FAILED" | "DEAD_LETTERED";
 
 export interface WorkflowAttempt {
   id: string;
   stage: string;
+  direction?: "forward" | "compensate";
   attempt_number: number;
   outcome: AttemptOutcome;
   started_at: string;

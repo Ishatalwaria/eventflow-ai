@@ -16,20 +16,37 @@ import { Button, Card, DataTable, Input, Label, Select, Textarea } from "../../c
 import { compactId, formatDate } from "../../lib/utils";
 import { copyToClipboard } from "../../lib/clipboard";
 
-const payloadSchema = z.object({
+const orderPayloadSchema = z.object({
   order_id: z.string().min(1).max(128),
   currency: z.string().regex(/^[A-Z]{3}$/),
   total_minor_units: z.number().int().min(0),
+  payment_method_token: z.string().min(1).max(128).optional(),
   items: z.array(z.object({ sku: z.string().min(1).max(100), quantity: z.number().int().min(1) })).min(1).max(100),
 });
+
+const replenishmentPayloadSchema = z.object({
+  sku: z.string().min(1).max(100),
+  quantity: z.number().int().min(1),
+  approval_token: z.string().min(1).max(128).optional(),
+});
+
+const paymentRecoveryPayloadSchema = z.object({
+  source_workflow_id: z.string().uuid(),
+  payment_method_token: z.string().min(1).max(128).optional(),
+});
+
 const eventSchema = z.object({
-  event_type: z.literal("order.created"),
+  event_type: z.enum([
+    "order.created",
+    "inventory.replenishment.requested",
+    "payment.recovery.requested",
+  ]),
   schema_version: z.literal(1),
   source: z.string().min(1).max(100).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/),
   idempotency_key: z.string().min(1).max(255).regex(/^[\x21-\x7E]+$/),
   occurred_at: z.string().datetime({ offset: true }),
   correlation_id: z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/),
-  payload: payloadSchema,
+  payload: z.any(),
 });
 const eventFormSchema = eventSchema.extend({ payload: z.any() });
 const batchSchema = z.array(eventSchema).min(1).max(50);
@@ -37,8 +54,101 @@ type EventForm = z.infer<typeof eventSchema>;
 
 function blankEvent(): EventForm {
   const id = crypto.randomUUID();
-  return { event_type: "order.created", schema_version: 1, source: "checkout-web", idempotency_key: id, occurred_at: new Date().toISOString(), correlation_id: id, payload: { order_id: "", currency: "INR", total_minor_units: 0, items: [{ sku: "", quantity: 1 }] } };
+  return {
+    event_type: "order.created",
+    schema_version: 1,
+    source: "checkout-web",
+    idempotency_key: id,
+    occurred_at: new Date().toISOString(),
+    correlation_id: id,
+    payload: {
+      order_id: "ORD-" + id.slice(0, 8).toUpperCase(),
+      currency: "INR",
+      total_minor_units: 24900,
+      payment_method_token: "ok_card",
+      items: [{ sku: "ITEM-KEYBOARD", quantity: 1 }],
+    },
+  };
 }
+
+interface ScenarioDefinition {
+  label: string;
+  eventType: "order.created" | "inventory.replenishment.requested" | "payment.recovery.requested";
+  payload: Record<string, unknown>;
+}
+
+const SCENARIOS: ScenarioDefinition[] = [
+  {
+    label: "Order: Happy path",
+    eventType: "order.created",
+    payload: {
+      order_id: "ORD-HAPPY",
+      currency: "INR",
+      total_minor_units: 24900,
+      payment_method_token: "ok_card",
+      items: [{ sku: "ITEM-KEYBOARD", quantity: 1 }],
+    },
+  },
+  {
+    label: "Order: Payment declined (Compensates)",
+    eventType: "order.created",
+    payload: {
+      order_id: "ORD-DECLINE",
+      currency: "INR",
+      total_minor_units: 24900,
+      payment_method_token: "fail_card",
+      items: [{ sku: "ITEM-KEYBOARD", quantity: 1 }],
+    },
+  },
+  {
+    label: "Order: Payment timeout (Retries)",
+    eventType: "order.created",
+    payload: {
+      order_id: "ORD-TIMEOUT",
+      currency: "INR",
+      total_minor_units: 24900,
+      payment_method_token: "timeout_card",
+      items: [{ sku: "ITEM-KEYBOARD", quantity: 1 }],
+    },
+  },
+  {
+    label: "Order: Out of stock (Rejection)",
+    eventType: "order.created",
+    payload: {
+      order_id: "ORD-OOS",
+      currency: "INR",
+      total_minor_units: 7900,
+      payment_method_token: "ok_card",
+      items: [{ sku: "OOS-MOUSE", quantity: 1 }],
+    },
+  },
+  {
+    label: "Replenish: Stock approval",
+    eventType: "inventory.replenishment.requested",
+    payload: {
+      sku: "ITEM-KEYBOARD",
+      quantity: 50,
+      approval_token: "approve",
+    },
+  },
+  {
+    label: "Replenish: Rejected request",
+    eventType: "inventory.replenishment.requested",
+    payload: {
+      sku: "ITEM-KEYBOARD",
+      quantity: 100,
+      approval_token: "reject_over_quota",
+    },
+  },
+  {
+    label: "Payment Recovery: Retry authorization",
+    eventType: "payment.recovery.requested",
+    payload: {
+      source_workflow_id: "00000000-0000-0000-0000-000000000000",
+      payment_method_token: "ok_card",
+    },
+  },
+];
 
 export function EventsPage() {
   const { hasToken, token } = useAuth();
@@ -66,8 +176,18 @@ export function EventsPage() {
     let parsed: unknown;
     try { parsed = JSON.parse(payloadText); }
     catch { setPayloadError("Enter valid JSON for the event payload."); return; }
-    const payload = payloadSchema.safeParse(parsed);
-    if (!payload.success) { setPayloadError(payload.error.issues[0]?.message ?? "Payload does not match the order.created schema."); return; }
+    const currentType = data.event_type;
+    let schemaToValidate = orderPayloadSchema;
+    if (currentType === "inventory.replenishment.requested") {
+      schemaToValidate = replenishmentPayloadSchema as any;
+    } else if (currentType === "payment.recovery.requested") {
+      schemaToValidate = paymentRecoveryPayloadSchema as any;
+    }
+    const payload = schemaToValidate.safeParse(parsed);
+    if (!payload.success) {
+      setPayloadError(payload.error.issues[0]?.message ?? `Payload does not match the ${currentType} schema.`);
+      return;
+    }
     setPayloadError(""); singleTokenRef.current = token; single.mutate({ ...data, payload: payload.data });
   });
   const resetForm = () => { const next = blankEvent(); form.reset(next); setPayloadText(JSON.stringify(next.payload, null, 2)); setPayloadError(""); single.reset(); };
@@ -83,13 +203,60 @@ export function EventsPage() {
   const fieldError = (name: keyof EventForm) => form.formState.errors[name]?.message?.toString();
 
   return <>
-    <PageHeader eyebrow="Event ingestion" title="Events" description="Submit order events and browse historical event records." />
+    <PageHeader eyebrow="Event ingestion" title="Events" description="Submit order fulfillment, replenishment, and recovery events." />
     {hasToken && <EventCollectionTable enabled={hasToken} />}
     {!hasToken ? <Card><EmptyState icon={Send} title="API connection required" description="Connect a client token in Settings before submitting or inspecting events." /></Card> : <div className="grid gap-5 xl:grid-cols-[1.25fr_.75fr]">
-      <Card className="overflow-hidden"><div className="flex items-center justify-between border-b border-slate-100 px-5 py-4"><div><h2 className="text-sm font-bold text-slate-900">Event intake</h2><p className="mt-1 text-xs text-slate-500">The API accepts order.created, schema version 1.</p></div><div className="flex rounded-lg bg-slate-100 p-1"><button className={"rounded-md px-3 py-1.5 text-xs font-semibold " + (tab === "single" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500")} onClick={() => setTab("single")}>Single event</button><button className={"rounded-md px-3 py-1.5 text-xs font-semibold " + (tab === "batch" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500")} onClick={() => setTab("batch")}>Batch JSON</button></div></div>
+      <Card className="overflow-hidden"><div className="flex items-center justify-between border-b border-slate-100 px-5 py-4"><div><h2 className="text-sm font-bold text-slate-900">Event intake</h2><p className="mt-1 text-xs text-slate-500">Select demonstration scenario or enter custom JSON.</p></div><div className="flex rounded-lg bg-slate-100 p-1"><button className={"rounded-md px-3 py-1.5 text-xs font-semibold " + (tab === "single" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500")} onClick={() => setTab("single")}>Single event</button><button className={"rounded-md px-3 py-1.5 text-xs font-semibold " + (tab === "batch" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500")} onClick={() => setTab("batch")}>Batch JSON</button></div></div>
         {tab === "single" ? <form onSubmit={onSingle} className="space-y-5 p-5 sm:p-6">
-          <div className="grid gap-4 sm:grid-cols-2"><Field label="Source" error={fieldError("source")}><Input {...form.register("source")} placeholder="checkout-web" /></Field><Field label="Event type" error={fieldError("event_type")}><Input value="order.created" readOnly className="bg-slate-50" /></Field><Field label="Idempotency key" error={fieldError("idempotency_key")}><Input {...form.register("idempotency_key")} /></Field><Field label="Correlation ID" error={fieldError("correlation_id")}><Input {...form.register("correlation_id")} /></Field><Field label="Occurred at (ISO 8601 with timezone)" error={fieldError("occurred_at")}><Input {...form.register("occurred_at")} placeholder="2026-10-30T10:00:00Z" /></Field></div>
-          <Field label="Payload JSON" error={payloadError}><Textarea id="event-payload" value={payloadText} onChange={(event) => { setPayloadText(event.target.value); setPayloadError(""); }} onBlur={() => { try { const parsed: unknown = JSON.parse(payloadText); const result = payloadSchema.safeParse(parsed); setPayloadError(result.success ? "" : result.error.issues[0]?.message ?? "Payload does not match the accepted schema."); } catch { setPayloadError("Enter valid JSON for the event payload."); } }} className="min-h-56 font-mono text-xs leading-relaxed" spellCheck={false} aria-describedby="payload-contract" /></Field><p id="payload-contract" className="-mt-3 text-[11px] text-slate-400">Accepted keys: order_id, currency, total_minor_units, and items containing SKU and quantity.</p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Source" error={fieldError("source")}><Input {...form.register("source")} placeholder="checkout-web" /></Field>
+            <Field label="Event type" error={fieldError("event_type")}>
+              <Select
+                {...form.register("event_type")}
+                onChange={(e) => {
+                  const val = e.target.value as EventForm["event_type"];
+                  form.setValue("event_type", val);
+                  if (val === "order.created") {
+                    setPayloadText(JSON.stringify(SCENARIOS[0].payload, null, 2));
+                  } else if (val === "inventory.replenishment.requested") {
+                    setPayloadText(JSON.stringify(SCENARIOS[4].payload, null, 2));
+                  } else if (val === "payment.recovery.requested") {
+                    setPayloadText(JSON.stringify(SCENARIOS[6].payload, null, 2));
+                  }
+                  setPayloadError("");
+                }}
+              >
+                <option value="order.created">order.created (Order Fulfillment Saga)</option>
+                <option value="inventory.replenishment.requested">inventory.replenishment.requested (Replenishment)</option>
+                <option value="payment.recovery.requested">payment.recovery.requested (Payment Recovery Saga)</option>
+              </Select>
+            </Field>
+            <Field label="Idempotency key" error={fieldError("idempotency_key")}><Input {...form.register("idempotency_key")} /></Field>
+            <Field label="Correlation ID" error={fieldError("correlation_id")}><Input {...form.register("correlation_id")} /></Field>
+            <Field label="Occurred at (ISO 8601 with timezone)" error={fieldError("occurred_at")}><Input {...form.register("occurred_at")} placeholder="2026-10-30T10:00:00Z" /></Field>
+          </div>
+          <div className="space-y-1.5">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Preset Scenarios</div>
+            <div className="flex flex-wrap gap-2">
+              {SCENARIOS.map((scenario) => (
+                <Button
+                  key={scenario.label}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    form.setValue("event_type", scenario.eventType);
+                    setPayloadText(JSON.stringify(scenario.payload, null, 2));
+                    setPayloadError("");
+                  }}
+                >
+                  {scenario.label}
+                </Button>
+              ))}
+            </div>
+          </div>
+          <Field label="Payload JSON" error={payloadError}><Textarea id="event-payload" value={payloadText} onChange={(event) => { setPayloadText(event.target.value); setPayloadError(""); }} className="min-h-56 font-mono text-xs leading-relaxed" spellCheck={false} aria-describedby="payload-contract" /></Field>
+          <p id="payload-contract" className="-mt-3 text-[11px] text-slate-400">Tokens ok_card, fail_card, and timeout_card drive the payment simulator. Approval tokens approve and reject drive replenishment.</p>
           {single.isError && <ErrorState title="Event submission failed" description={apiErrorMessage(single.error)} />}
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4"><span className="text-[11px] text-slate-400">Submitting creates the event, initial workflow, and outbox record atomically.</span><div className="flex gap-2"><Button type="button" variant="outline" onClick={resetForm} disabled={single.isPending}>Cancel</Button><Button type="submit" disabled={single.isPending}><Send size={15} />{single.isPending ? "Submitting…" : "Submit event"}</Button></div></div>
         </form> : <div className="space-y-4 p-5 sm:p-6"><div className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-xs leading-relaxed text-blue-800">Submit a JSON array of 1–50 event envelopes. The full batch is accepted or rolled back as one transaction.</div><Label htmlFor="batch-file">Upload JSON array (optional)</Label><Input id="batch-file" type="file" accept="application/json,.json" onChange={async (event) => { const file = event.target.files?.[0]; if (file) { setBatchText(await file.text()); toast.success("Batch JSON loaded."); } }} /><Label htmlFor="batch-json">Event envelopes (JSON)</Label><Textarea id="batch-json" value={batchText} onChange={(event) => setBatchText(event.target.value)} className="min-h-[320px] font-mono text-xs leading-relaxed" spellCheck={false} /><div className="flex items-center justify-between gap-3">{batch.isError ? <span className="text-xs text-rose-700">{apiErrorMessage(batch.error)}</span> : <span className="text-[11px] text-slate-400">Batch limit: 50 events · request limit: 256 KiB</span>}<Button onClick={onBatch} disabled={batch.isPending}><Upload size={15} />{batch.isPending ? "Submitting…" : "Submit batch"}</Button></div>{batch.data && <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">Batch accepted. {batch.data.results.length} results returned.</div>}</div>}

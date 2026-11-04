@@ -21,7 +21,7 @@ Consumer Group: eventflow.kafka-to-rabbit.v1
        │
        ▼ Publisher-confirmed, persistent task delivery
 RabbitMQ Direct Exchange: eventflow.tasks.x
-  order.created.v1 ──> Queue: eventflow.tasks.order-validation.q
+  workflow.stage.v1 ──> Queue: eventflow.tasks.workflow.q
                             │
                             ├── On Transient Failure (Bounded Retries)
                             │     └──> eventflow.retry.x ──> TTL Retry Queues

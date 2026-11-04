@@ -87,6 +87,24 @@ class DeterministicMockProvider:
                 "Collect the worker attempt and sanitized error details for the failed stage."
             )
 
+        compensation = next(
+            (item for item in items if item.get("kind") == "compensation_summary"), None
+        )
+        if compensation and compensation["data"].get("count"):
+            succeeded = compensation["data"].get("succeeded", 0)
+            facts.append(
+                {
+                    "statement": (
+                        f"Compensation actions recorded: {compensation['data']['count']}; "
+                        f"succeeded: {succeeded}."
+                    ),
+                    "evidence_ids": [compensation["id"]],
+                }
+            )
+            checks.append(
+                "Confirm reserved inventory and payment status match the compensation outcome."
+            )
+
         metrics = next(
             (item for item in items if item.get("kind") == "health_metrics_availability"), None
         )

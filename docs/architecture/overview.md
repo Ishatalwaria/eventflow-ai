@@ -36,7 +36,7 @@ flowchart TD
 
     subgraph TaskQueue["Task Queue & Broker (RabbitMQ)"]
         TaskEx["Exchange: eventflow.tasks.x"]
-        TaskQueueQ["Queue: eventflow.tasks.order-validation.q"]
+        TaskQueueQ["Queue: eventflow.tasks.workflow.q"]
         RetryEx["Exchange: eventflow.retry.x (TTL Queues)"]
         DeadEx["Exchange: eventflow.dead.x (DLQ)"]
     end
@@ -153,7 +153,7 @@ The message pipeline decouples domain event broadcasting from reliable point-to-
    - Disables auto-commit; forwards tasks to RabbitMQ with publisher confirms.
    - Commits Kafka offsets only after RabbitMQ confirms durable enqueueing.
 3. **RabbitMQ Task Queue & Dead-Letter Exchanges:**
-   - **Task Exchange (`eventflow.tasks.x`):** Direct exchange routing events to durable quorum queues (`eventflow.tasks.order-validation.q`).
+   - **Task Exchange (`eventflow.tasks.x`):** Direct exchange routing stage tasks to the durable quorum queue `eventflow.tasks.workflow.q` with routing key `workflow.stage.v1`. The task carries `workflow_type`, `stage`, and `direction` (`forward` or `compensate`).
    - **Retry Exchange (`eventflow.retry.x`):** Dead-letter routing with message TTL (exponential backoff queues) returning unacknowledged transient errors back to the primary task queue.
    - **Dead-Letter Exchange (`eventflow.dead.x`):** Routes exhausted retries or non-retriable business failures directly to `eventflow.tasks.dead.q`.
 4. **Worker Execution:**

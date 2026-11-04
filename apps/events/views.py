@@ -51,7 +51,12 @@ class EventBatchCreateView(EventAPIBase):
         client = get_effective_client(request)
         if client is None:
             return Response(
-                {"error": {"code": "UNAUTHORIZED", "message": "Valid client credentials required."}},
+                {
+                    "error": {
+                        "code": "UNAUTHORIZED",
+                        "message": "Valid client credentials required.",
+                    }
+                },
                 status=status.HTTP_401_UNAUTHORIZED,
             )
         results = accept_events(
@@ -78,7 +83,12 @@ class EventCollectionView(generics.ListAPIView):
         client = get_effective_client(request)
         if client is None:
             return Response(
-                {"error": {"code": "UNAUTHORIZED", "message": "Valid client credentials required."}},
+                {
+                    "error": {
+                        "code": "UNAUTHORIZED",
+                        "message": "Valid client credentials required.",
+                    }
+                },
                 status=status.HTTP_401_UNAUTHORIZED,
             )
         result = accept_events(
@@ -133,7 +143,9 @@ class EventDetailView(EventAPIBase):
     @extend_schema(responses={200: EventDetailSerializer})
     def get(self, request, event_id):
         event = get_object_or_404(
-            Event.objects.filter(resolve_client_filter(request, prefix="client")).select_related("workflow"),
+            Event.objects.filter(resolve_client_filter(request, prefix="client")).select_related(
+                "workflow"
+            ),
             pk=event_id,
         )
         return Response(EventDetailSerializer(event).data)

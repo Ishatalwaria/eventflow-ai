@@ -7,14 +7,14 @@ import { analyticsService, type LifecycleAnalyticsParams } from "./services/anal
 import { overviewService } from "./services/overview";
 import type { EventEnvelope, WorkflowState } from "./types";
 
-export const workflowStateKeys: WorkflowState[] = ["RECEIVED", "QUEUED", "PROCESSING", "RETRY_WAIT", "SUCCEEDED", "FAILED", "DEAD_LETTERED"];
+export const workflowStateKeys: WorkflowState[] = ["RECEIVED", "QUEUED", "PROCESSING", "RETRY_WAIT", "COMPENSATING", "SUCCEEDED", "FAILED", "DEAD_LETTERED", "CANCELLED"];
 
 export function useWorkflows(params: WorkflowListParams = {}, enabled = true) {
   return useQuery({ queryKey: ["workflows", "list", params], queryFn: () => workflowsService.list(params), enabled });
 }
 
 export function useWorkflow(workflowId: string, enabled = true) {
-  return useQuery({ queryKey: ["workflows", "detail", workflowId], queryFn: () => workflowsService.get(workflowId), enabled: enabled && Boolean(workflowId), refetchInterval: (query) => ["RECEIVED", "QUEUED", "PROCESSING", "RETRY_WAIT"].includes(query.state.data?.state ?? "") ? 5000 : false });
+  return useQuery({ queryKey: ["workflows", "detail", workflowId], queryFn: () => workflowsService.get(workflowId), enabled: enabled && Boolean(workflowId), refetchInterval: (query) => ["RECEIVED", "QUEUED", "PROCESSING", "RETRY_WAIT", "COMPENSATING"].includes(query.state.data?.state ?? "") ? 5000 : false });
 }
 
 export function useWorkflowStateCounts(enabled = true) {

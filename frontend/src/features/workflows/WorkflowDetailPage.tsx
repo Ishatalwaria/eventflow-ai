@@ -1,9 +1,12 @@
-import { ArrowLeft, Bot, Clipboard, Clock3, RefreshCw, ShieldAlert, Workflow as WorkflowIcon } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft, Bot, Clipboard, Clock3, RefreshCw, ShieldAlert, ShoppingBag, Workflow as WorkflowIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { apiErrorMessage } from "../../api/client";
 import { useCreateIncidentSummary, useEvent, useWorkflow } from "../../api/hooks";
+import { commerceService } from "../../api/services/commerce";
+import { workflowsService } from "../../api/services/workflows";
 import type { IncidentSummary } from "../../api/types";
 import { useAuth } from "../../app/auth";
 import { ErrorState, LoadingState, PageHeader, SectionTitle, StateBadge } from "../../components/layout";
@@ -17,7 +20,21 @@ export function WorkflowDetailPage() {
   const [summary, setSummary] = useState<IncidentSummary | null>(null);
   const query = useWorkflow(workflowId, hasToken);
   const eventQuery = useEvent(query.data?.event_id ?? "", hasToken && Boolean(query.data?.event_id));
+  const orderQuery = useQuery({
+    queryKey: ["orders", "by-workflow", workflowId],
+    queryFn: () => commerceService.orders({ workflow_id: workflowId }),
+    enabled: hasToken && Boolean(workflowId),
+  });
   const incident = useCreateIncidentSummary(workflowId);
+  const queryClient = useQueryClient();
+  const command = useMutation({
+    mutationFn: (action: "retry" | "replay" | "cancel") => workflowsService.command(workflowId, action),
+    onSuccess: (result) => {
+      toast.success("Workflow " + result.state.replaceAll("_", " ").toLowerCase() + ".");
+      void queryClient.invalidateQueries({ queryKey: ["workflows", "detail", workflowId] });
+      void queryClient.invalidateQueries({ queryKey: ["orders", "by-workflow", workflowId] });
+    },
+  });
   useEffect(() => {
     if (incident.data) {
       setSummary(incident.data);
@@ -29,14 +46,82 @@ export function WorkflowDetailPage() {
   if (query.isLoading) return <><PageHeader title="Workflow details" /><Card><LoadingState /></Card></>;
   if (query.isError || !query.data) return <><PageHeader title="Workflow details" /><ErrorState description={apiErrorMessage(query.error)} onRetry={() => void query.refetch()} /></>;
   const workflow = query.data;
+  const order = orderQuery.data?.[0];
   const eligible = ["FAILED", "DEAD_LETTERED"].includes(workflow.state);
   const attempts = [...workflow.attempts].sort((a, b) => a.started_at.localeCompare(b.started_at) || a.attempt_number - b.attempt_number);
   return <>
-    <PageHeader eyebrow="Workflow detail" title={workflow.workflow_type.replaceAll("_", " ")} description={"Workflow " + workflow.id} actions={<><Button variant="outline" asChild><Link to="/workflows"><ArrowLeft size={15} />Back to workflows</Link></Button><Button variant="outline" onClick={() => void query.refetch()}><RefreshCw size={15} />Refresh</Button></>} />
+    <PageHeader eyebrow="Workflow detail" title={workflow.workflow_type.replaceAll("_", " ")} description={"Workflow " + workflow.id} actions={<><Button variant="outline" asChild><Link to="/workflows"><ArrowLeft size={15} />Back to workflows</Link></Button><Button variant="outline" onClick={() => void query.refetch()}><RefreshCw size={15} />Refresh</Button>{["FAILED", "DEAD_LETTERED"].includes(workflow.state) && <Button variant="outline" disabled={command.isPending} onClick={() => command.mutate("retry")}>Retry</Button>}{workflow.state === "DEAD_LETTERED" && <Button variant="outline" disabled={command.isPending} onClick={() => command.mutate("replay")}>Replay</Button>}{["RECEIVED", "QUEUED", "PROCESSING", "RETRY_WAIT", "COMPENSATING"].includes(workflow.state) && <Button variant="outline" disabled={command.isPending} onClick={() => command.mutate("cancel")}>Cancel</Button>}</>} />
     <div className="grid gap-5 xl:grid-cols-[1.35fr_.65fr]">
       <div className="space-y-5">
         <Card className="p-5 sm:p-6"><div className="flex flex-wrap items-start justify-between gap-3"><div className="flex items-center gap-3"><div className="grid h-11 w-11 place-items-center rounded-xl bg-blue-50 text-blue-600"><WorkflowIcon size={20} /></div><div><div className="text-sm font-bold text-slate-900">Workflow overview</div><div className="mt-1 text-xs text-slate-500">{workflow.current_stage.replaceAll("_", " ")} · {workflow.workflow_type}</div></div></div><StateBadge state={workflow.state} /></div><div className="mt-6 grid gap-4 border-t border-slate-100 pt-5 sm:grid-cols-2"><Info label="Workflow ID" value={workflow.id} /><Info label="Event ID" value={workflow.event_id} /><Info label="Correlation ID" value={eventQuery.data?.correlation_id ?? (eventQuery.isLoading ? "Loading event metadata…" : "Unavailable from workflow API")} /><Info label="Created" value={formatDate(workflow.created_at)} /><Info label="Last updated" value={formatDate(workflow.updated_at)} /><Info label="Finished" value={formatDate(workflow.finished_at)} /></div>{eventQuery.data && <Link to={`/events/${eventQuery.data.id}`} className="mt-4 inline-flex text-xs font-semibold text-blue-700 hover:underline">View related event →</Link>}{workflow.last_error_code && <div className="mt-5 rounded-lg border border-rose-100 bg-rose-50 px-4 py-3"><div className="text-[10px] font-bold uppercase tracking-wider text-rose-600">Last error</div><div className="mt-1 font-mono text-xs text-rose-800">{workflow.last_error_code}</div></div>}</Card>
-        <Card className="overflow-hidden"><div className="p-5 pb-0 sm:p-6"><SectionTitle title="Execution timeline" detail="Backend attempt records only. Inventory checking runs within order_validation; it is not a separately recorded stage." /></div>{attempts.length === 0 ? <div className="px-6 pb-6 text-xs leading-relaxed text-slate-500">No stage execution records exist yet. The current stage field alone does not establish that a stage ran or succeeded.</div> : <div className="divide-y divide-slate-100">{attempts.map((attempt, index) => <div key={attempt.id} className="relative flex gap-4 px-5 py-5 sm:px-6"><div className="flex w-7 shrink-0 flex-col items-center"><div className={"grid h-7 w-7 place-items-center rounded-full " + (attempt.outcome === "SUCCEEDED" ? "bg-emerald-100 text-emerald-700" : ["FAILED", "DEAD_LETTERED"].includes(attempt.outcome) ? "bg-rose-100 text-rose-700" : "bg-blue-100 text-blue-700")}><span className="text-[10px] font-bold">{index + 1}</span></div>{index < attempts.length - 1 && <div className="mt-2 w-px flex-1 bg-slate-200" />}</div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><div className="text-xs font-bold capitalize text-slate-900">{attempt.stage.replaceAll("_", " ")} <span className="font-normal text-slate-400">· attempt {attempt.attempt_number}</span></div><Badge variant={attempt.outcome === "SUCCEEDED" ? "success" : ["FAILED", "DEAD_LETTERED"].includes(attempt.outcome) ? "danger" : attempt.outcome === "RETRYING" ? "warning" : "info"}>{attempt.outcome.replaceAll("_", " ")}</Badge></div><div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-500"><span>Started {formatDate(attempt.started_at)}</span><span>Duration {formatDuration(attempt.duration_ms)}</span><span>Finished {formatDate(attempt.finished_at)}</span></div>{attempt.error_code && <div className="mt-3 rounded-lg bg-rose-50 px-3 py-2"><div className="font-mono text-[10px] font-semibold text-rose-700">{sanitizeDiagnosticText(attempt.error_code)}</div>{attempt.error_detail && <p className="mt-1 text-xs leading-relaxed text-rose-800">{sanitizeDiagnosticText(attempt.error_detail)}</p>}</div>}</div></div>)}</div>}</Card>
+        {order && (
+          <Card className="p-5 sm:p-6">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <ShoppingBag size={18} className="text-blue-600" />
+                  <h2 className="text-sm font-bold text-slate-900">Order & Fulfillment Status</h2>
+                </div>
+                <div className="mt-1 font-mono text-xs text-slate-500">
+                  {order.external_order_id} · {order.currency} {(order.total_minor_units / 100).toFixed(2)}
+                </div>
+              </div>
+              <StateBadge state={order.status} />
+            </div>
+            <div className="mt-4 grid gap-4 border-t border-slate-100 pt-4 sm:grid-cols-3">
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Order Items</div>
+                <div className="mt-1 space-y-1">
+                  {order.lines.map((l, i) => (
+                    <div key={i} className="text-xs font-medium text-slate-700">
+                      {l.sku} <span className="text-slate-400">× {l.quantity}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Inventory Reservations</div>
+                <div className="mt-1 space-y-1">
+                  {order.reservations && order.reservations.length > 0 ? (
+                    order.reservations.map((r) => (
+                      <div key={r.id} className="flex items-center gap-2 text-xs">
+                        <span className="font-mono text-slate-700">{r.sku} ({r.quantity})</span>
+                        <Badge variant={r.status === "CONSUMED" ? "success" : r.status === "RELEASED" ? "neutral" : "warning"}>
+                          {r.status}
+                        </Badge>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-xs text-slate-400">None recorded</div>
+                  )}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Payment Authorization</div>
+                <div className="mt-1 space-y-1">
+                  {order.payments.length > 0 ? (
+                    order.payments.map((p) => (
+                      <div key={p.id} className="text-xs">
+                        <div className="flex items-center gap-2">
+                          <Badge variant={p.status === "AUTHORIZED" ? "success" : "danger"}>
+                            {p.status}
+                          </Badge>
+                          <span className="text-[11px] text-slate-400">{p.provider}</span>
+                        </div>
+                        {p.failure_code && (
+                          <div className="mt-0.5 font-mono text-[10px] text-rose-700">{p.failure_code}</div>
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-xs text-slate-400">None recorded</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </Card>
+        )}
+        <Card className="overflow-hidden"><div className="p-5 pb-0 sm:p-6"><SectionTitle title="Execution timeline" detail="Each row is a persisted forward or compensation attempt." /></div>{attempts.length === 0 ? <div className="px-6 pb-6 text-xs leading-relaxed text-slate-500">No stage execution records exist yet. The current stage field alone does not establish that a stage ran or succeeded.</div> : <div className="divide-y divide-slate-100">{attempts.map((attempt, index) => <div key={attempt.id} className="relative flex gap-4 px-5 py-5 sm:px-6"><div className="flex w-7 shrink-0 flex-col items-center"><div className={"grid h-7 w-7 place-items-center rounded-full " + (attempt.outcome === "SUCCEEDED" ? "bg-emerald-100 text-emerald-700" : ["FAILED", "DEAD_LETTERED"].includes(attempt.outcome) ? "bg-rose-100 text-rose-700" : "bg-blue-100 text-blue-700")}><span className="text-[10px] font-bold">{index + 1}</span></div>{index < attempts.length - 1 && <div className="mt-2 w-px flex-1 bg-slate-200" />}</div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><div className="text-xs font-bold capitalize text-slate-900">{attempt.direction === "compensate" ? "compensate · " : ""}{attempt.stage.replaceAll("_", " ")} <span className="font-normal text-slate-400">· attempt {attempt.attempt_number}</span></div><Badge variant={attempt.outcome === "SUCCEEDED" ? "success" : ["FAILED", "DEAD_LETTERED"].includes(attempt.outcome) ? "danger" : attempt.outcome === "RETRYING" ? "warning" : "info"}>{attempt.outcome.replaceAll("_", " ")}</Badge></div><div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-500"><span>Started {formatDate(attempt.started_at)}</span><span>Duration {formatDuration(attempt.duration_ms)}</span><span>Finished {formatDate(attempt.finished_at)}</span></div>{attempt.error_code && <div className="mt-3 rounded-lg bg-rose-50 px-3 py-2"><div className="font-mono text-[10px] font-semibold text-rose-700">{sanitizeDiagnosticText(attempt.error_code)}</div>{attempt.error_detail && <p className="mt-1 text-xs leading-relaxed text-rose-800">{sanitizeDiagnosticText(attempt.error_detail)}</p>}</div>}</div></div>)}</div>}</Card>
         <Card className="overflow-hidden"><div className="p-5 pb-0 sm:p-6"><SectionTitle title="Workflow attempts" detail={`${attempts.length} record(s) returned by the workflow API`} /></div>{attempts.length ? <div className="table-scroll"><table className="data-table"><thead><tr><th>Attempt</th><th>Stage</th><th>Status</th><th>Error code</th><th>Started</th><th>Finished</th><th>Duration</th></tr></thead><tbody>{attempts.map((attempt) => <tr key={attempt.id}><td>#{attempt.attempt_number}</td><td className="capitalize">{attempt.stage.replaceAll("_", " ")}</td><td><StateBadge state={attempt.outcome} /></td><td className="font-mono text-rose-700">{sanitizeDiagnosticText(attempt.error_code || "—")}</td><td>{formatDate(attempt.started_at)}</td><td>{formatDate(attempt.finished_at)}</td><td>{formatDuration(attempt.duration_ms)}</td></tr>)}</tbody></table>{attempts.some((attempt) => attempt.error_detail) && <div className="space-y-2 p-5">{attempts.filter((attempt) => attempt.error_detail).map((attempt) => <div key={attempt.id} className="rounded-lg bg-rose-50 p-3"><div className="text-[10px] font-bold text-rose-700">Attempt #{attempt.attempt_number} · sanitized error</div><p className="mt-1 text-xs leading-relaxed text-rose-800">{sanitizeDiagnosticText(attempt.error_detail)}</p></div>)}</div>}</div> : <div className="px-6 pb-6 text-xs text-slate-500">No attempt records have been returned.</div>}</Card>
         <Card className="p-5 sm:p-6"><SectionTitle title="Processing logs" detail="Standalone workflow logs are not exposed by the API." />{summary?.evidence.evidence.some((item) => item.kind === "processing_log") ? <div className="space-y-3">{summary.evidence.evidence.filter((item) => item.kind === "processing_log").map((item) => <div key={item.id} className="rounded-lg bg-slate-50 p-3"><div className="font-mono text-[10px] text-slate-400">{item.id}</div><p className="mt-1 text-xs text-slate-700">{typeof item.data.message === "string" ? sanitizeDiagnosticText(item.data.message) : "Processing log evidence"}</p></div>)}</div> : <div className="text-xs leading-relaxed text-slate-500">Logs are included only when returned in a generated incident evidence bundle.</div>}</Card>
         {summary && <IncidentSummaryCard summary={summary} />}

@@ -1,6 +1,6 @@
 import logging
-from django.conf import settings
-from django.contrib.auth import authenticate, get_user_model, login, logout
+
+from django.contrib.auth import get_user_model, login, logout
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import default_token_generator
 from django.core.exceptions import ValidationError
@@ -26,8 +26,12 @@ class CSRFView(APIView):
 
     @extend_schema(
         summary="Get CSRF Token",
-        description="Initialize CSRF cookie and retrieve CSRF token for single-page application requests.",
-        responses={200: inline_serializer("CSRFResponse", fields={"csrfToken": serializers.CharField()})},
+        description=(
+            "Initialize CSRF cookie and retrieve CSRF token for single-page application requests."
+        ),
+        responses={
+            200: inline_serializer("CSRFResponse", fields={"csrfToken": serializers.CharField()})
+        },
     )
     def get(self, request):
         return Response({"csrfToken": get_token(request)})
@@ -38,14 +42,22 @@ class RegisterView(APIView):
 
     @extend_schema(
         summary="Register User",
-        description="Register a new user account with session establishment and auto-provisioned workspace API key.",
-        responses={201: inline_serializer("RegisterResponse", fields={
-            "id": serializers.IntegerField(),
-            "name": serializers.CharField(),
-            "email": serializers.EmailField(),
-            "is_staff": serializers.BooleanField(),
-            "default_client_id": serializers.UUIDField(),
-        })},
+        description=(
+            "Register a new user account with session establishment "
+            "and auto-provisioned workspace API key."
+        ),
+        responses={
+            201: inline_serializer(
+                "RegisterResponse",
+                fields={
+                    "id": serializers.IntegerField(),
+                    "name": serializers.CharField(),
+                    "email": serializers.EmailField(),
+                    "is_staff": serializers.BooleanField(),
+                    "default_client_id": serializers.UUIDField(),
+                },
+            )
+        },
     )
     def post(self, request):
         data = request.data or {}
@@ -56,13 +68,23 @@ class RegisterView(APIView):
 
         if not name or not email or not password:
             return Response(
-                {"error": {"code": "VALIDATION_ERROR", "message": "Name, email, and password are required."}},
+                {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "Name, email, and password are required.",
+                    }
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         if "@" not in email or "." not in email.split("@")[-1]:
             return Response(
-                {"error": {"code": "INVALID_EMAIL", "message": "Please enter a valid email address."}},
+                {
+                    "error": {
+                        "code": "INVALID_EMAIL",
+                        "message": "Please enter a valid email address.",
+                    }
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -72,9 +94,17 @@ class RegisterView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if User.objects.filter(email__iexact=email).exists() or User.objects.filter(username__iexact=email).exists():
+        if (
+            User.objects.filter(email__iexact=email).exists()
+            or User.objects.filter(username__iexact=email).exists()
+        ):
             return Response(
-                {"error": {"code": "EMAIL_ALREADY_EXISTS", "message": "An account with this email already exists."}},
+                {
+                    "error": {
+                        "code": "EMAIL_ALREADY_EXISTS",
+                        "message": "An account with this email already exists.",
+                    }
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -95,7 +125,15 @@ class RegisterView(APIView):
         )
 
         # Auto-provision a default ingestion client for the new user's workspace
-        client, _ = create_api_client(f"{name}'s Default Client", owner=user, can_view_analytics=True)
+        client, _ = create_api_client(
+            f"{name}'s Default Client", owner=user, can_view_analytics=True
+        )
+        try:
+            from apps.commerce.inventory import seed_demo_catalog_for_client
+
+            seed_demo_catalog_for_client(client)
+        except Exception as exc:
+            logger.warning("Could not auto-seed demo catalog for client: %s", exc)
 
         login(request, user)
 
@@ -119,12 +157,17 @@ class LoginView(APIView):
     @extend_schema(
         summary="User Login",
         description="Authenticate via email and password, establishing an HttpOnly session cookie.",
-        responses={200: inline_serializer("LoginResponse", fields={
-            "id": serializers.IntegerField(),
-            "name": serializers.CharField(),
-            "email": serializers.EmailField(),
-            "is_staff": serializers.BooleanField(),
-        })},
+        responses={
+            200: inline_serializer(
+                "LoginResponse",
+                fields={
+                    "id": serializers.IntegerField(),
+                    "name": serializers.CharField(),
+                    "email": serializers.EmailField(),
+                    "is_staff": serializers.BooleanField(),
+                },
+            )
+        },
     )
     def post(self, request):
         data = request.data or {}
@@ -133,11 +176,19 @@ class LoginView(APIView):
 
         if not identifier or not password:
             return Response(
-                {"error": {"code": "VALIDATION_ERROR", "message": "Email and password are required."}},
+                {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "Email and password are required.",
+                    }
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        user = User.objects.filter(email__iexact=identifier).first() or User.objects.filter(username__iexact=identifier).first()
+        user = (
+            User.objects.filter(email__iexact=identifier).first()
+            or User.objects.filter(username__iexact=identifier).first()
+        )
         if user is None or not user.check_password(password):
             # Constant-time mitigation
             User().set_password("dummy-protection")
@@ -154,13 +205,15 @@ class LoginView(APIView):
 
         login(request, user)
 
-        return Response({
-            "id": user.id,
-            "name": user.first_name or user.username,
-            "email": user.email,
-            "type": "user",
-            "is_staff": user.is_staff,
-        })
+        return Response(
+            {
+                "id": user.id,
+                "name": user.first_name or user.username,
+                "email": user.email,
+                "type": "user",
+                "is_staff": user.is_staff,
+            }
+        )
 
 
 class LogoutView(APIView):
@@ -169,7 +222,9 @@ class LogoutView(APIView):
     @extend_schema(
         summary="User Logout",
         description="Terminate current session and invalidate session cookie.",
-        responses={200: inline_serializer("LogoutResponse", fields={"detail": serializers.CharField()})},
+        responses={
+            200: inline_serializer("LogoutResponse", fields={"detail": serializers.CharField()})
+        },
     )
     def post(self, request):
         logout(request)
@@ -182,39 +237,48 @@ class CurrentUserView(APIView):
     @extend_schema(
         summary="Current User Profile",
         description="Retrieve profile details for the currently authenticated session.",
-        responses={200: inline_serializer("CurrentUserResponse", fields={
-            "id": serializers.CharField(),
-            "name": serializers.CharField(),
-            "email": serializers.CharField(allow_blank=True),
-            "is_staff": serializers.BooleanField(),
-            "is_api_client": serializers.BooleanField(),
-            "type": serializers.CharField(),
-        })},
+        responses={
+            200: inline_serializer(
+                "CurrentUserResponse",
+                fields={
+                    "id": serializers.CharField(),
+                    "name": serializers.CharField(),
+                    "email": serializers.CharField(allow_blank=True),
+                    "is_staff": serializers.BooleanField(),
+                    "is_api_client": serializers.BooleanField(),
+                    "type": serializers.CharField(),
+                },
+            )
+        },
     )
     def get(self, request):
         user = request.user
         if isinstance(user, User):
-            return Response({
-                "id": str(user.id),
-                "username": user.username,
-                "name": user.first_name or user.username,
-                "email": user.email,
-                "type": "user",
-                "is_staff": user.is_staff,
-                "is_api_client": False,
-                "date_joined": user.date_joined,
-            })
+            return Response(
+                {
+                    "id": str(user.id),
+                    "username": user.username,
+                    "name": user.first_name or user.username,
+                    "email": user.email,
+                    "type": "user",
+                    "is_staff": user.is_staff,
+                    "is_api_client": False,
+                    "date_joined": user.date_joined,
+                }
+            )
         if isinstance(user, APIClient):
-            return Response({
-                "id": str(user.id),
-                "name": user.name,
-                "email": "",
-                "type": "api_client",
-                "is_staff": False,
-                "is_api_client": True,
-                "can_view_analytics": user.can_view_analytics,
-                "created_at": user.created_at,
-            })
+            return Response(
+                {
+                    "id": str(user.id),
+                    "name": user.name,
+                    "email": "",
+                    "type": "api_client",
+                    "is_staff": False,
+                    "is_api_client": True,
+                    "can_view_analytics": user.can_view_analytics,
+                    "created_at": user.created_at,
+                }
+            )
         raise AuthenticationFailed()
 
 
@@ -226,12 +290,17 @@ class PasswordResetRequestView(APIView):
         if email:
             user = User.objects.filter(email__iexact=email).first()
             if user:
-                token = default_token_generator.make_token(user)
+                _token = default_token_generator.make_token(user)
                 uid = urlsafe_base64_encode(force_bytes(user.pk))
                 logger.info("Password reset requested for user_id=%s uid=%s", user.pk, uid)
                 # In production, send email; in local demo, log token safely
         return Response(
-            {"detail": "If that email exists in our system, password reset instructions have been sent."},
+            {
+                "detail": (
+                    "If that email exists in our system, "
+                    "password reset instructions have been sent."
+                )
+            },
             status=status.HTTP_200_OK,
         )
 
@@ -248,7 +317,12 @@ class PasswordResetConfirmView(APIView):
 
         if not uid_b64 or not token or not password:
             return Response(
-                {"error": {"code": "VALIDATION_ERROR", "message": "UID, token, and new password are required."}},
+                {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "UID, token, and new password are required.",
+                    }
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -283,7 +357,14 @@ class PasswordResetConfirmView(APIView):
 
         user.set_password(password)
         user.save()
-        return Response({"detail": "Password has been reset successfully. You can now sign in with your new password."})
+        return Response(
+            {
+                "detail": (
+                    "Password has been reset successfully. "
+                    "You can now sign in with your new password."
+                )
+            }
+        )
 
 
 class ClientListCreateView(APIView):
@@ -293,7 +374,11 @@ class ClientListCreateView(APIView):
         if not isinstance(request.user, User):
             raise PermissionDenied("Only authenticated users can manage API clients.")
 
-        qs = APIClient.objects.all() if request.user.is_staff else APIClient.objects.filter(owner=request.user)
+        qs = (
+            APIClient.objects.all()
+            if request.user.is_staff
+            else APIClient.objects.filter(owner=request.user)
+        )
         qs = qs.order_by("-created_at")
 
         clients = [
@@ -327,6 +412,13 @@ class ClientListCreateView(APIView):
             owner=request.user,
             can_view_analytics=can_view_analytics,
         )
+        if request.data.get("seed_demo", False):
+            try:
+                from apps.commerce.inventory import seed_demo_catalog_for_client
+
+                seed_demo_catalog_for_client(client)
+            except Exception as exc:
+                logger.warning("Could not seed demo catalog for new client: %s", exc)
 
         return Response(
             {
@@ -348,11 +440,20 @@ class ClientRevokeView(APIView):
         if not isinstance(request.user, User):
             raise PermissionDenied("Only authenticated users can revoke API clients.")
 
-        qs = APIClient.objects.all() if request.user.is_staff else APIClient.objects.filter(owner=request.user)
+        qs = (
+            APIClient.objects.all()
+            if request.user.is_staff
+            else APIClient.objects.filter(owner=request.user)
+        )
         client = qs.filter(pk=client_id).first()
         if client is None:
             return Response(
-                {"error": {"code": "NOT_FOUND", "message": "API client not found or not owned by you."}},
+                {
+                    "error": {
+                        "code": "NOT_FOUND",
+                        "message": "API client not found or not owned by you.",
+                    }
+                },
                 status=status.HTTP_404_NOT_FOUND,
             )
 

@@ -19,7 +19,11 @@ urlpatterns = [
     path("auth/logout", LogoutView.as_view(), name="auth-logout"),
     path("auth/me", CurrentUserView.as_view(), name="auth-me"),
     path("auth/password-reset", PasswordResetRequestView.as_view(), name="auth-password-reset"),
-    path("auth/password-reset/confirm", PasswordResetConfirmView.as_view(), name="auth-password-reset-confirm"),
+    path(
+        "auth/password-reset/confirm",
+        PasswordResetConfirmView.as_view(),
+        name="auth-password-reset-confirm",
+    ),
     path("clients", ClientListCreateView.as_view(), name="clients-list-create"),
     path("clients/<uuid:client_id>/revoke", ClientRevokeView.as_view(), name="clients-revoke"),
 ]

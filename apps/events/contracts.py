@@ -8,13 +8,6 @@ class OrderItemSerializer(serializers.Serializer):
     quantity = serializers.IntegerField(min_value=1)
 
 
-class OrderCreatedV1PayloadSerializer(serializers.Serializer):
-    order_id = serializers.CharField(max_length=128)
-    currency = serializers.RegexField(r"^[A-Z]{3}$")
-    total_minor_units = serializers.IntegerField(min_value=0)
-    items = OrderItemSerializer(many=True, allow_empty=False, max_length=100)
-
-
 class OffsetDateTimeField(serializers.DateTimeField):
     default_error_messages = {
         "timezone": "Timestamp must include a UTC offset or Z suffix.",
@@ -27,6 +20,32 @@ class OffsetDateTimeField(serializers.DateTimeField):
         return super().to_internal_value(value)
 
 
+class OrderCreatedV1PayloadSerializer(serializers.Serializer):
+    order_id = serializers.CharField(max_length=128)
+    currency = serializers.RegexField(r"^[A-Z]{3}$")
+    total_minor_units = serializers.IntegerField(min_value=0)
+    items = OrderItemSerializer(many=True, allow_empty=False, max_length=100)
+    payment_method_token = serializers.CharField(max_length=128, required=False, default="ok_card")
+
+
+class ReplenishmentRequestedV1Serializer(serializers.Serializer):
+    sku = serializers.CharField(max_length=100)
+    quantity = serializers.IntegerField(min_value=1)
+    approval_token = serializers.CharField(max_length=128, required=False, default="approve")
+
+
+class PaymentRecoveryRequestedV1Serializer(serializers.Serializer):
+    source_workflow_id = serializers.UUIDField()
+    payment_method_token = serializers.CharField(max_length=128, required=False, default="ok_card")
+
+
+PAYLOAD_SERIALIZERS = {
+    "order.created": OrderCreatedV1PayloadSerializer,
+    "inventory.replenishment.requested": ReplenishmentRequestedV1Serializer,
+    "payment.recovery.requested": PaymentRecoveryRequestedV1Serializer,
+}
+
+
 class EventEnvelopeSerializer(serializers.Serializer):
     event_type = serializers.RegexField(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$", max_length=200)
     schema_version = serializers.IntegerField(min_value=1, max_value=32767)
@@ -37,12 +56,12 @@ class EventEnvelopeSerializer(serializers.Serializer):
     payload = serializers.JSONField()
 
     def validate(self, attrs):
-        if attrs["event_type"] != "order.created":
-            raise serializers.ValidationError({"event_type": "Unsupported event type."})
         if attrs["schema_version"] != 1:
             raise serializers.ValidationError({"schema_version": "Unsupported schema version."})
-
-        payload_serializer = OrderCreatedV1PayloadSerializer(data=attrs["payload"])
+        serializer_cls = PAYLOAD_SERIALIZERS.get(attrs["event_type"])
+        if serializer_cls is None:
+            raise serializers.ValidationError({"event_type": "Unsupported event type."})
+        payload_serializer = serializer_cls(data=attrs["payload"])
         if not payload_serializer.is_valid():
             raise serializers.ValidationError({"payload": payload_serializer.errors})
         return attrs

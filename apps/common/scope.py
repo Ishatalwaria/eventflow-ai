@@ -35,7 +35,8 @@ def get_effective_client(request):
     Get or resolve the active APIClient for state-creating operations (e.g. event ingest).
 
     - If request.user is APIClient, returns request.user.
-    - If request.user is User, returns their first active owned APIClient (creating a default if needed).
+    - If request.user is User, returns their first active owned APIClient
+      (creating a default if needed).
     - Otherwise returns None.
     """
     user = getattr(request, "user", None)
@@ -46,9 +47,12 @@ def get_effective_client(request):
         return user
 
     if isinstance(user, User):
-        active_client = user.api_clients.filter(revoked_at__isnull=True).order_by("created_at").first()
+        active_client = (
+            user.api_clients.filter(revoked_at__isnull=True).order_by("created_at").first()
+        )
         if active_client is None:
             from apps.common.services import create_api_client
+
             active_client, _ = create_api_client(
                 f"{user.username}'s Ingestion Client",
                 owner=user,

@@ -4,7 +4,10 @@ import pytest
 
 from apps.processing.adapters.kafka import BrokerUnavailable
 from apps.processing.pipeline import forward_kafka_record, process_rabbit_delivery
-from apps.processing.workflow_service import TransientProcessingError
+from apps.processing.workflow_service import (
+    TransientProcessingError,
+    process_workflow_task,
+)
 from apps.workflows.models import Workflow, WorkflowAttempt
 
 from .helpers import create_workflow
@@ -136,6 +139,24 @@ def test_invalid_kafka_record_is_dead_lettered_before_offset_commit():
     assert consumer.commits == [9]
 
 
+def _assert_stage_recorded(workflow, stage="validate_order"):
+    workflow.refresh_from_db()
+    assert workflow.current_stage == stage
+    assert WorkflowAttempt.objects.filter(
+        workflow=workflow, stage=stage, outcome=WorkflowAttempt.Outcome.SUCCEEDED
+    ).exists()
+
+
+def _assert_succeeded(workflow):
+    workflow.refresh_from_db()
+    assert workflow.state == Workflow.State.SUCCEEDED
+
+
+def _assert_retry_wait(workflow):
+    workflow.refresh_from_db()
+    assert workflow.state == Workflow.State.RETRY_WAIT
+
+
 def test_rabbit_duplicate_task_is_idempotent_and_acknowledged_after_db_commit():
     event, workflow, task = create_workflow()
     import json
@@ -144,16 +165,19 @@ def test_rabbit_duplicate_task_is_idempotent_and_acknowledged_after_db_commit():
     rabbit = FakeRabbitPublisher()
     first_delivery = FakeDelivery(
         body,
-        on_ack=lambda: _assert_succeeded(workflow),
+        on_ack=lambda: _assert_stage_recorded(workflow, "validate_order"),
     )
-    duplicate_delivery = FakeDelivery(body, on_ack=lambda: _assert_succeeded(workflow))
+    duplicate_delivery = FakeDelivery(
+        body, on_ack=lambda: _assert_stage_recorded(workflow, "validate_order")
+    )
 
-    assert process_rabbit_delivery(first_delivery, rabbit_publisher=rabbit) == "ACK"
-    assert process_rabbit_delivery(duplicate_delivery, rabbit_publisher=rabbit) == "ACK"
+    assert process_rabbit_delivery(first_delivery, rabbit_publisher=rabbit) == "ENQUEUE_NEXT"
+    assert process_rabbit_delivery(duplicate_delivery, rabbit_publisher=rabbit) == "ENQUEUE_NEXT"
 
     assert first_delivery.ack_count == duplicate_delivery.ack_count == 1
     assert WorkflowAttempt.objects.filter(workflow=workflow).count() == 1
-    assert event.workflow.state == event.workflow.State.SUCCEEDED
+    workflow.refresh_from_db()
+    assert workflow.state == Workflow.State.QUEUED
 
 
 def test_crash_after_recorded_outcome_before_ack_redelivery_does_not_duplicate_attempt():
@@ -164,7 +188,7 @@ def test_crash_after_recorded_outcome_before_ack_redelivery_does_not_duplicate_a
     body = json.dumps(task).encode()
 
     def crash_after_commit():
-        _assert_succeeded(workflow)
+        _assert_stage_recorded(workflow, "validate_order")
         raise RuntimeError("simulated worker crash before ack")
 
     with pytest.raises(RuntimeError, match="simulated worker crash"):
@@ -172,18 +196,24 @@ def test_crash_after_recorded_outcome_before_ack_redelivery_does_not_duplicate_a
             FakeDelivery(body, on_ack=crash_after_commit), rabbit_publisher=rabbit
         )
 
-    retry = FakeDelivery(body, on_ack=lambda: _assert_succeeded(workflow))
-    assert process_rabbit_delivery(retry, rabbit_publisher=rabbit) == "ACK"
+    retry = FakeDelivery(body, on_ack=lambda: _assert_stage_recorded(workflow, "validate_order"))
+    assert process_rabbit_delivery(retry, rabbit_publisher=rabbit) == "ENQUEUE_NEXT"
     assert WorkflowAttempt.objects.filter(workflow=workflow).count() == 1
-    assert event.workflow.state == event.workflow.State.SUCCEEDED
+    workflow.refresh_from_db()
+    assert workflow.state == Workflow.State.QUEUED
 
 
 def test_transient_worker_failure_confirms_retry_before_ack():
-    _event, workflow, task = create_workflow(sku="TEMPORARY-FAIL-FIRST")
+    _event, workflow, task = create_workflow(sku="TEMPORARY-FAIL-FIRST", on_hand=5)
     import json
 
+    # First run validate_order to advance to reserve_inventory stage
+    validated_decision = process_workflow_task(task)
+    assert validated_decision.action == "ENQUEUE_NEXT"
+    reserve_task = validated_decision.task
+
     rabbit = FakeRabbitPublisher()
-    body = json.dumps(task).encode()
+    body = json.dumps(reserve_task).encode()
     delivery = FakeDelivery(body, on_ack=lambda: _assert_retry_wait(workflow))
 
     result = process_rabbit_delivery(delivery, rabbit_publisher=rabbit)
@@ -197,35 +227,44 @@ def test_transient_worker_failure_confirms_retry_before_ack():
 def test_retry_exhaustion_publishes_dead_letter_before_ack():
     import json
 
-    _event, workflow, task = create_workflow()
+    # Use timeout_card which triggers TransientProcessingError during authorize_payment
+    _event, workflow, task = create_workflow(payment_method_token="timeout_card", on_hand=5)
+    # Stage 1: validate_order
+    val_decision = process_workflow_task(task)
+    # Stage 2: reserve_inventory
+    res_decision = process_workflow_task(val_decision.task)
+    current_task = res_decision.task
+
     rabbit = FakeRabbitPublisher()
-    checker = AlwaysTemporaryInventoryFailure()
     expected_actions = ["RETRY", "RETRY", "DEAD_LETTER"]
 
     for expected_action in expected_actions:
-        delivery = FakeDelivery(json.dumps(task).encode())
+        delivery = FakeDelivery(json.dumps(current_task).encode())
         result = process_rabbit_delivery(
             delivery,
             rabbit_publisher=rabbit,
-            inventory_checker=checker,
         )
         assert result == expected_action
         assert delivery.ack_count == 1
         if expected_action == "RETRY":
-            task = rabbit.retries[-1][0]
+            current_task = rabbit.retries[-1][0]
 
     workflow.refresh_from_db()
     assert workflow.state == Workflow.State.DEAD_LETTERED
     assert len(rabbit.dead_letters) == 1
     dead_letter_task, error_code, _detail = rabbit.dead_letters[0]
     assert dead_letter_task["attempt_number"] == 3
-    assert error_code == "INVENTORY_UNAVAILABLE"
+    assert error_code == "PAYMENT_TIMEOUT"
 
 
 def test_permanent_business_failure_routes_dead_letter_after_persisting_failure():
     import json
 
-    _event, workflow, task = create_workflow(sku="OOS-LOCAL-TEST")
+    _event, workflow, task = create_workflow(sku="OOS-LOCAL-TEST", on_hand=0)
+    # Advance through validate_order to reserve_inventory where insufficient stock is detected
+    val_decision = process_workflow_task(task)
+    reserve_task = val_decision.task
+
     rabbit = FakeRabbitPublisher()
 
     def assert_failed_before_ack():
@@ -233,10 +272,11 @@ def test_permanent_business_failure_routes_dead_letter_after_persisting_failure(
         assert workflow.state == Workflow.State.FAILED
         assert WorkflowAttempt.objects.filter(
             workflow=workflow,
+            stage="reserve_inventory",
             outcome=WorkflowAttempt.Outcome.FAILED,
         ).exists()
 
-    delivery = FakeDelivery(json.dumps(task).encode(), on_ack=assert_failed_before_ack)
+    delivery = FakeDelivery(json.dumps(reserve_task).encode(), on_ack=assert_failed_before_ack)
     result = process_rabbit_delivery(delivery, rabbit_publisher=rabbit)
 
     assert result == "DEAD_LETTER"
@@ -245,11 +285,50 @@ def test_permanent_business_failure_routes_dead_letter_after_persisting_failure(
     assert rabbit.dead_letters[0][1] == "INSUFFICIENT_INVENTORY"
 
 
-def _assert_succeeded(workflow):
+def test_pipeline_full_saga_success():
+    import json
+
+    _event, workflow, current_task = create_workflow(on_hand=5)
+    rabbit = FakeRabbitPublisher()
+
+    for _ in range(10):
+        delivery = FakeDelivery(json.dumps(current_task).encode())
+        action = process_rabbit_delivery(delivery, rabbit_publisher=rabbit)
+        if action == "ACK":
+            break
+        assert action == "ENQUEUE_NEXT"
+        current_task = rabbit.tasks[-1]
+
     workflow.refresh_from_db()
-    assert workflow.state == workflow.State.SUCCEEDED
+    assert workflow.state == Workflow.State.SUCCEEDED
+    assert workflow.order.status == "COMPLETED"
+    assert WorkflowAttempt.objects.filter(workflow=workflow).count() == 6
 
 
-def _assert_retry_wait(workflow):
+def test_pipeline_saga_payment_failure_and_compensation():
+    import json
+
+    from apps.commerce.models import InventoryItem, InventoryReservation
+
+    _event, workflow, current_task = create_workflow(payment_method_token="fail_card", on_hand=5)
+    item = InventoryItem.objects.get(product__sku="ITEM-KEYBOARD")
+    assert item.reserved == 0
+
+    rabbit = FakeRabbitPublisher()
+
+    for _ in range(10):
+        delivery = FakeDelivery(json.dumps(current_task).encode())
+        action = process_rabbit_delivery(delivery, rabbit_publisher=rabbit)
+        if action == "ACK":
+            break
+        assert action in {"ENQUEUE_NEXT", "ENQUEUE_COMPENSATE"}
+        current_task = rabbit.tasks[-1]
+
     workflow.refresh_from_db()
-    assert workflow.state == workflow.State.RETRY_WAIT
+    assert workflow.state == Workflow.State.FAILED
+    assert workflow.order.status == "FAILED"
+    # Verify reservation was released
+    assert not InventoryReservation.objects.filter(workflow=workflow, status="RESERVED").exists()
+    assert InventoryReservation.objects.filter(workflow=workflow, status="RELEASED").count() == 1
+    item.refresh_from_db()
+    assert item.reserved == 0

@@ -45,7 +45,9 @@ class WorkflowDetailView(APIView):
     @extend_schema(responses={200: WorkflowDetailSerializer})
     def get(self, request, workflow_id):
         workflow = get_object_or_404(
-            Workflow.objects.filter(resolve_client_filter(request, prefix="event__client")).select_related("event").prefetch_related("attempts"),
+            Workflow.objects.filter(resolve_client_filter(request, prefix="event__client"))
+            .select_related("event")
+            .prefetch_related("attempts"),
             pk=workflow_id,
         )
         return Response(WorkflowDetailSerializer(workflow).data)

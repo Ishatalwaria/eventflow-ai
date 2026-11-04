@@ -92,6 +92,13 @@ def process_rabbit_delivery(delivery, *, rabbit_publisher, inventory_checker=Non
             WORKFLOW_DEAD_LETTERS.labels(stage="unknown", error_code=exc.code).inc()
             return "DEAD_LETTER"
 
+        if decision.action in {"ENQUEUE_NEXT", "ENQUEUE_COMPENSATE"}:
+            rabbit_publisher.publish_task(decision.task)
+            delivery.ack()
+            BROKER_OPERATIONS.labels(
+                broker="rabbitmq", operation="enqueue_stage", result="success"
+            ).inc()
+            return decision.action
         if decision.action == "RETRY":
             rabbit_publisher.publish_retry(decision.task, decision.retry_index)
             delivery.ack()

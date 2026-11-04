@@ -1,7 +1,7 @@
-import uuid
+from datetime import UTC
+
 import pytest
 from django.contrib.auth import get_user_model
-from django.test import Client as DjangoClient
 from rest_framework.test import APIClient
 
 from apps.common.models import APIClient as MachineClient
@@ -227,13 +227,12 @@ def test_client_management_crud_and_one_time_secret(auth_client, test_user, othe
 
 @pytest.mark.django_db
 def test_cross_tenant_isolation_for_human_users(auth_client, test_user, other_user):
-    from datetime import datetime, timezone
-    from apps.events.models import Event
+    from datetime import datetime
 
     alice_client = MachineClient.objects.get(owner=test_user)
     bob_client = MachineClient.objects.get(owner=other_user)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     Event.objects.create(
         client=alice_client,
         event_type="order.created",

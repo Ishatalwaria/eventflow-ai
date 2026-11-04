@@ -9,6 +9,7 @@ class WorkflowAttemptSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "stage",
+            "direction",
             "attempt_number",
             "outcome",
             "started_at",

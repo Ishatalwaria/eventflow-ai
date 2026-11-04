@@ -29,7 +29,7 @@ Kafka-to-Rabbit Forwarder (Consumer Group: eventflow.kafka-to-rabbit.v1)
        │ (publisher-confirmed)
        ▼
 RabbitMQ Direct Exchange: eventflow.tasks.x
-  order.created.v1 ──> Queue: eventflow.tasks.order-validation.q
+  workflow.stage.v1 ──> Queue: eventflow.tasks.workflow.q
                             │
                             ├── On Transient Failure ──> eventflow.retry.x (TTL queues)
                             │                                  │ (TTL expired)
@@ -54,6 +54,7 @@ For complete technical specifications, see:
 - [Broker Topology & Delivery Semantics](docs/architecture/broker-topology.md)
 - [Operations Runbook & Failure Drills](docs/operations-runbook.md)
 - [Production Security Checklist](docs/security-checklist.md)
+- [Interview notes](docs/interview-faq.md)
 
 ---
 
@@ -449,6 +450,8 @@ EventFlow AI is a personal proprietary project developed for demonstration and o
 
 ## Known Limitations
 
-- **Event Schema Support:** Current event ingestion supports schema version 1 of `order.created`. Additional event types require corresponding schema and stage handlers.
+- **Event schema support:** Ingestion supports `order.created`, `inventory.replenishment.requested`, and `payment.recovery.requested` (schema version 1). New types need a payload contract and a workflow definition.
+- **Payments:** Authorization uses `LocalPaymentSimulator`. Tokens `ok_`, `fail_`, and `timeout_` are deterministic. No card network or real money movement is involved.
+- **Orchestrator shape:** One workflow worker runs every stage. Compensation is an explicit saga stage, not a separate service.
 - **Trace Context Export:** Structured logging correlates requests using `X-Request-ID` and `X-Trace-ID` across all services, but does not currently export OpenTelemetry distributed trace spans.
 - **Worker Process Health:** Worker daemons report health status through process heartbeat and Prometheus metrics; they do not expose standalone HTTP readiness endpoints.

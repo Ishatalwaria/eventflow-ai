@@ -73,7 +73,9 @@ class IncidentSummaryCreateView(APIView):
     @extend_schema(request=None, responses={201: IncidentSummarySerializer})
     def post(self, request, workflow_id):
         workflow = get_object_or_404(
-            Workflow.objects.filter(resolve_client_filter(request, prefix="event__client")).select_related("event"),
+            Workflow.objects.filter(
+                resolve_client_filter(request, prefix="event__client")
+            ).select_related("event"),
             pk=workflow_id,
         )
         if workflow.state not in {Workflow.State.FAILED, Workflow.State.DEAD_LETTERED}:
@@ -94,7 +96,9 @@ class IncidentSummaryListView(generics.ListAPIView):
 
     def get_queryset(self):
         return (
-            IncidentSummary.objects.filter(resolve_client_filter(self.request, prefix="workflow__event__client"))
+            IncidentSummary.objects.filter(
+                resolve_client_filter(self.request, prefix="workflow__event__client")
+            )
             .select_related("workflow", "workflow__event")
             .order_by("-created_at", "-id")
         )
@@ -134,7 +138,9 @@ class IncidentSummaryDetailView(APIView):
     @extend_schema(responses={200: IncidentSummarySerializer})
     def get(self, request, incident_id):
         summary = get_object_or_404(
-            IncidentSummary.objects.filter(resolve_client_filter(request, prefix="workflow__event__client")).select_related("workflow", "workflow__event"),
+            IncidentSummary.objects.filter(
+                resolve_client_filter(request, prefix="workflow__event__client")
+            ).select_related("workflow", "workflow__event"),
             pk=incident_id,
         )
         return Response(IncidentSummarySerializer(summary).data)

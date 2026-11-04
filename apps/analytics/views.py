@@ -189,7 +189,9 @@ class TenantLifecycleAnalyticsView(APIView):
         )
         latest = events.aggregate(latest=Max("received_at"))["latest"]
         percentiles = None
-        matching_client_ids = list(Event.objects.filter(client_filter).values_list("client_id", flat=True).distinct())
+        matching_client_ids = list(
+            Event.objects.filter(client_filter).values_list("client_id", flat=True).distinct()
+        )
         if connection.vendor == "postgresql" and matching_client_ids:
             with connection.cursor() as cursor:
                 cursor.execute(

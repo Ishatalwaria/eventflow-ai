@@ -6,6 +6,7 @@ from django.db import IntegrityError, transaction
 from apps.common.observability import bind_log_context
 from apps.processing.models import ProcessingLog
 from apps.processing.outbox import record_initial_domain_outbox
+from apps.processing.saga.definitions import workflow_type_for_event
 from apps.workflows.models import Workflow
 
 from .models import Event
@@ -35,7 +36,11 @@ def _create_one(*, client, envelope, request_id):
                 request_id=request_id,
                 payload=envelope["payload"],
             )
-            workflow = Workflow.objects.create(event=event)
+            workflow = Workflow.objects.create(
+                event=event,
+                workflow_type=workflow_type_for_event(envelope["event_type"]),
+                current_stage="accepted",
+            )
             record_initial_domain_outbox(event, workflow_id=workflow.id)
             ProcessingLog.objects.create(
                 event=event,

@@ -93,7 +93,7 @@ export const overviewFixture: OverviewSummary = {
   generated_at: "2026-10-31T12:00:00Z",
   event_count: 1,
   processed_event_count: 1,
-  workflow_state_counts: { RECEIVED: 0, QUEUED: 0, PROCESSING: 0, RETRY_WAIT: 0, SUCCEEDED: 0, FAILED: 1, DEAD_LETTERED: 0 },
+  workflow_state_counts: { RECEIVED: 0, QUEUED: 0, PROCESSING: 0, RETRY_WAIT: 0, COMPENSATING: 0, SUCCEEDED: 0, FAILED: 1, DEAD_LETTERED: 0, CANCELLED: 0 },
   average_processing_latency_ms: 900,
   processed_per_minute: [{ minute: "2026-10-31T11:59:00Z", count: 1 }],
   recent_events: [{ id: eventListFixture.id, event_type: eventListFixture.event_type, source: eventListFixture.source, schema_version: eventListFixture.schema_version, idempotency_key: eventListFixture.idempotency_key, correlation_id: eventListFixture.correlation_id, received_at: eventListFixture.received_at, workflow_id: eventDetailFixture.workflow.id, workflow_state: "FAILED" }],

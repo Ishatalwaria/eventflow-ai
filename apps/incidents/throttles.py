@@ -6,6 +6,7 @@ from django.utils import timezone
 from rest_framework.throttling import BaseThrottle
 
 from apps.common.scope import get_effective_client
+
 from .models import IncidentSummaryRateWindow
 
 
@@ -26,9 +27,7 @@ class IncidentSummaryThrottle(BaseThrottle):
                 client_id=client.pk,
                 defaults={"window_started_at": now, "request_count": 0},
             )
-            window = IncidentSummaryRateWindow.objects.select_for_update().get(
-                client_id=client.pk
-            )
+            window = IncidentSummaryRateWindow.objects.select_for_update().get(client_id=client.pk)
             if now - window.window_started_at >= self.duration:
                 window.window_started_at = now
                 window.request_count = 0

@@ -71,6 +71,7 @@ INSTALLED_APPS = [
     "drf_spectacular",
     "apps.common.apps.CommonConfig",
     "apps.events.apps.EventsConfig",
+    "apps.commerce.apps.CommerceConfig",
     "apps.workflows.apps.WorkflowsConfig",
     "apps.processing.apps.ProcessingConfig",
     "apps.incidents.apps.IncidentsConfig",

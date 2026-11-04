@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, BarChart3, ChevronLeft, ChevronRight, CircleHelp, GitBranch, HeartPulse, Inbox, LayoutDashboard, LogOut, Menu, PanelLeftClose, PanelLeftOpen, Settings2, ShieldCheck, X, type LucideIcon } from "lucide-react";
+import { Activity, AlertTriangle, BarChart3, ChevronLeft, ChevronRight, CircleHelp, GitBranch, HeartPulse, Inbox, LayoutDashboard, LogOut, Menu, Package, PanelLeftClose, PanelLeftOpen, Settings2, ShieldCheck, ShoppingBag, X, type LucideIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../app/auth";
@@ -9,6 +9,8 @@ const navItems = [
   { to: "/overview", label: "Overview", icon: LayoutDashboard },
   { to: "/events", label: "Events", icon: Inbox },
   { to: "/workflows", label: "Workflows", icon: GitBranch },
+  { to: "/orders", label: "Orders", icon: ShoppingBag },
+  { to: "/inventory", label: "Inventory", icon: Package },
   { to: "/incidents", label: "AI incidents", icon: AlertTriangle },
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
   { to: "/health", label: "System health", icon: HeartPulse },
@@ -53,7 +55,15 @@ function Sidebar({ close, collapsed = false, onToggle }: { close?: () => void; c
 }
 
 const pageTitles: Record<string, string> = {
-  "/overview": "Overview", "/events": "Events", "/workflows": "Workflows", "/incidents": "AI incidents", "/analytics": "Analytics", "/health": "System health", "/settings": "Settings",
+  "/overview": "Overview",
+  "/events": "Events",
+  "/workflows": "Workflows",
+  "/orders": "Orders",
+  "/inventory": "Inventory",
+  "/incidents": "AI incidents",
+  "/analytics": "Analytics",
+  "/health": "System health",
+  "/settings": "Settings",
 };
 
 export function AppLayout() {
@@ -61,7 +71,7 @@ export function AppLayout() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const title = Object.entries(pageTitles).find(([path]) => location.pathname.startsWith(path))?.[1] ?? "Operations";
-  const { user, logout, hasToken } = useAuth();
+  const { user, logout, token } = useAuth();
   const initials = user?.name
     ? user.name
         .split(" ")
@@ -90,7 +100,7 @@ export function AppLayout() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            {hasToken && (
+            {token && (
               <div className="hidden items-center gap-2 rounded-full border border-blue-200 bg-blue-50/50 px-3 py-1.5 text-[11px] text-blue-700 lg:flex">
                 <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
                 Token override active
@@ -150,7 +160,7 @@ export function MetricCard({ title, value, note, icon: Icon, tone = "slate", una
 }
 
 export function StateBadge({ state }: { state: string }) {
-  const variant = ["SUCCEEDED"].includes(state) ? "success" : ["FAILED", "DEAD_LETTERED"].includes(state) ? "danger" : ["PROCESSING", "QUEUED", "RETRYING"].includes(state) ? "info" : ["RETRY_WAIT"].includes(state) ? "warning" : "neutral";
+  const variant = ["SUCCEEDED"].includes(state) ? "success" : ["FAILED", "DEAD_LETTERED", "CANCELLED"].includes(state) ? "danger" : ["PROCESSING", "QUEUED", "RETRYING", "COMPENSATING"].includes(state) ? "info" : ["RETRY_WAIT"].includes(state) ? "warning" : "neutral";
   return <Badge variant={variant}>{state.replaceAll("_", " ")}</Badge>;
 }
 

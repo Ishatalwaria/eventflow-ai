@@ -50,6 +50,7 @@ def _attempt_evidence(attempt):
         "kind": "workflow_attempt",
         "data": {
             "stage": sanitize_text(attempt.stage),
+            "direction": attempt.direction,
             "attempt_number": attempt.attempt_number,
             "outcome": attempt.outcome,
             "started_at": _iso(attempt.started_at),
@@ -63,7 +64,7 @@ def _attempt_evidence(attempt):
 
 def _log_evidence(log):
     attributes = {}
-    for key in ("stage", "error_code"):
+    for key in ("stage", "direction", "error_code"):
         value = log.attributes.get(key) if isinstance(log.attributes, dict) else None
         if isinstance(value, str):
             attributes[key] = sanitize_text(value, max_length=100)
@@ -91,6 +92,7 @@ def build_workflow_evidence(workflow: Workflow) -> dict:
             "kind": "workflow_state",
             "data": {
                 "state": workflow.state,
+                "workflow_type": sanitize_text(workflow.workflow_type),
                 "failed_stage": workflow.current_stage,
                 "created_at": _iso(workflow.created_at),
                 "updated_at": _iso(workflow.updated_at),
@@ -122,8 +124,29 @@ def build_workflow_evidence(workflow: Workflow) -> dict:
         ).order_by("attempt_number", "started_at", "id")[: MAX_ATTEMPTS + 1]
     )
     attempt_truncated = len(attempts) > MAX_ATTEMPTS
-    for attempt in attempts[:MAX_ATTEMPTS]:
+    included_attempts = attempts[:MAX_ATTEMPTS]
+    for attempt in included_attempts:
         evidence.append(_attempt_evidence(attempt))
+    compensations = [
+        attempt
+        for attempt in included_attempts
+        if attempt.direction == WorkflowAttempt.Direction.COMPENSATE
+    ]
+    evidence.append(
+        {
+            "id": f"compensation:{workflow.id}",
+            "kind": "compensation_summary",
+            "data": {
+                "count": len(compensations),
+                "succeeded": sum(
+                    1
+                    for attempt in compensations
+                    if attempt.outcome == WorkflowAttempt.Outcome.SUCCEEDED
+                ),
+                "stages": [attempt.stage for attempt in compensations],
+            },
+        }
+    )
 
     # Reserve one slot for the health-metric availability fact.
     remaining_logs = max(0, MAX_EVIDENCE_ITEMS - 1 - len(evidence))

@@ -3,13 +3,30 @@ import uuid
 from datetime import datetime
 
 MAX_MESSAGE_BYTES = 524_288
+DOMAIN_EVENT_TYPES = {
+    "order.created",
+    "inventory.replenishment.requested",
+    "payment.recovery.requested",
+}
 DOMAIN_EVENT_TYPE = "order.created"
 LIFECYCLE_EVENT_TYPES = {
     "workflow.processing",
     "workflow.retry_wait",
+    "workflow.compensating",
     "workflow.succeeded",
     "workflow.failed",
     "workflow.dead_lettered",
+}
+WORKFLOW_STATES = {
+    "RECEIVED",
+    "QUEUED",
+    "PROCESSING",
+    "RETRY_WAIT",
+    "COMPENSATING",
+    "SUCCEEDED",
+    "FAILED",
+    "DEAD_LETTERED",
+    "CANCELLED",
 }
 
 
@@ -59,32 +76,56 @@ def validate_domain_event(value):
             "payload",
         },
     )
-    if value["event_type"] != DOMAIN_EVENT_TYPE:
+    if value["event_type"] not in DOMAIN_EVENT_TYPES:
         raise ContractError("Unsupported domain event type.")
     if "workflow_id" in value:
         try:
             uuid.UUID(str(value["workflow_id"]))
         except (TypeError, ValueError):
             raise ContractError("Domain event workflow ID is invalid.") from None
-    payload = value["payload"]
-    if (
-        not isinstance(payload.get("order_id"), str)
-        or not isinstance(payload.get("currency"), str)
-        or len(payload["currency"]) != 3
-        or not payload["currency"].isupper()
-        or type(payload.get("total_minor_units")) is not int
-        or payload["total_minor_units"] < 0
-        or not isinstance(payload.get("items"), list)
-        or not 1 <= len(payload["items"]) <= 100
-        or any(
-            not isinstance(item, dict)
-            or not isinstance(item.get("sku"), str)
-            or type(item.get("quantity")) is not int
-            or item["quantity"] < 1
-            for item in payload["items"]
-        )
-    ):
-        raise ContractError("Order event payload is invalid.")
+    _validate_domain_payload(value["event_type"], value["payload"])
+
+
+def _validate_domain_payload(event_type, payload):
+    if event_type == "order.created":
+        token = payload.get("payment_method_token", "ok_card")
+        if (
+            not isinstance(payload.get("order_id"), str)
+            or not isinstance(payload.get("currency"), str)
+            or len(payload["currency"]) != 3
+            or not payload["currency"].isupper()
+            or type(payload.get("total_minor_units")) is not int
+            or payload["total_minor_units"] < 0
+            or not isinstance(payload.get("items"), list)
+            or not 1 <= len(payload["items"]) <= 100
+            or any(
+                not isinstance(item, dict)
+                or not isinstance(item.get("sku"), str)
+                or type(item.get("quantity")) is not int
+                or item["quantity"] < 1
+                for item in payload["items"]
+            )
+            or not isinstance(token, str)
+            or not 1 <= len(token) <= 128
+        ):
+            raise ContractError("Order event payload is invalid.")
+        return
+    if event_type == "inventory.replenishment.requested":
+        if (
+            not isinstance(payload.get("sku"), str)
+            or not payload["sku"]
+            or type(payload.get("quantity")) is not int
+            or payload["quantity"] < 1
+        ):
+            raise ContractError("Replenishment event payload is invalid.")
+        return
+    if event_type == "payment.recovery.requested":
+        try:
+            uuid.UUID(str(payload.get("source_workflow_id")))
+        except (TypeError, ValueError):
+            raise ContractError("Recovery event payload is invalid.") from None
+        return
+    raise ContractError("Unsupported domain event type.")
 
 
 def validate_lifecycle_event(value):
@@ -110,16 +151,7 @@ def validate_lifecycle_event(value):
     payload = value["payload"]
     if (
         not isinstance(payload.get("state"), str)
-        or payload["state"]
-        not in {
-            "RECEIVED",
-            "QUEUED",
-            "PROCESSING",
-            "RETRY_WAIT",
-            "SUCCEEDED",
-            "FAILED",
-            "DEAD_LETTERED",
-        }
+        or payload["state"] not in WORKFLOW_STATES
         or not isinstance(payload.get("stage"), str)
         or not 1 <= len(payload["stage"]) <= 100
         or type(payload.get("attempt_number")) is not int
@@ -160,14 +192,21 @@ def decode_message(raw, *, lifecycle=False):
 
 
 def make_workflow_task(domain_event, workflow_id, attempt_number=1):
+    from apps.processing.saga.definitions import get_definition, workflow_type_for_event
+
     validate_domain_event(domain_event)
+    workflow_type = workflow_type_for_event(domain_event["event_type"])
+    stage = get_definition(workflow_type).first_stage
     task = {
         "task_version": 1,
-        "task_id": f"{workflow_id}:order-validation:{attempt_number}",
+        "task_id": f"{workflow_id}:forward:{stage}:{attempt_number}",
         "workflow_id": str(workflow_id),
         "event_id": domain_event["event_id"],
         "event_type": domain_event["event_type"],
         "event_schema_version": domain_event["schema_version"],
+        "workflow_type": workflow_type,
+        "stage": stage,
+        "direction": "forward",
         "correlation_id": domain_event["correlation_id"],
         "attempt_number": attempt_number,
         "payload": domain_event["payload"],
@@ -188,6 +227,9 @@ def validate_workflow_task(value):
         "event_type",
         "event_schema_version",
         "correlation_id",
+        "workflow_type",
+        "stage",
+        "direction",
         "attempt_number",
         "payload",
     }
@@ -201,7 +243,11 @@ def validate_workflow_task(value):
     if (
         value["task_version"] != 1
         or value["event_schema_version"] != 1
-        or value["event_type"] != DOMAIN_EVENT_TYPE
+        or value["event_type"] not in DOMAIN_EVENT_TYPES
+        or value["direction"] not in {"forward", "compensate"}
+        or not isinstance(value.get("stage"), str)
+        or not 1 <= len(value["stage"]) <= 100
+        or not isinstance(value.get("workflow_type"), str)
         or not isinstance(value["correlation_id"], str)
         or not 1 <= len(value["correlation_id"]) <= 128
         or type(value["attempt_number"]) is not int

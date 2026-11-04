@@ -12,4 +12,12 @@ export const workflowsService = {
     const response = await api.get<Workflow>("/api/v1/workflows/" + encodeURIComponent(workflowId));
     return response.data;
   },
+  async command(workflowId: string, action: "retry" | "replay" | "cancel") {
+    const response = await api.post<{ workflow_id: string; state: string; current_stage: string; audit_id: string }>(
+      "/api/v1/workflows/" + encodeURIComponent(workflowId) + "/" + action,
+      {},
+      { headers: { "Idempotency-Key": crypto.randomUUID() } },
+    );
+    return response.data;
+  },
 };
