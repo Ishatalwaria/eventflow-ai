@@ -28,7 +28,7 @@ from apps.processing.topology import (
     TASK_QUEUE,
 )
 from apps.processing.workflow_service import process_workflow_task
-from apps.workflows.models import Workflow
+from apps.workflows.models import Workflow, WorkflowAttempt
 
 pytestmark = [pytest.mark.integration, pytest.mark.django_db(transaction=True)]
 
@@ -154,7 +154,7 @@ def test_authenticated_event_reaches_terminal_workflow_through_live_brokers():
         assert task["workflow_id"] == workflow_id
 
         # Simulate a worker crash after the database commit and before Rabbit ack.
-        assert process_workflow_task(task).action == "ACK"
+        assert process_workflow_task(task).action == "ENQUEUE_NEXT"
         rabbit.close()
         rabbit = None
 
@@ -183,11 +183,34 @@ def test_authenticated_event_reaches_terminal_workflow_through_live_brokers():
                 rabbit.channel.basic_nack(method.delivery_tag, requeue=True)
             time.sleep(0.1)
         assert redelivery is not None, "Timed out waiting for the unacknowledged task to requeue."
-        assert process_rabbit_delivery(redelivery, rabbit_publisher=rabbit) == "ACK"
+        assert process_rabbit_delivery(redelivery, rabbit_publisher=rabbit) == "ENQUEUE_NEXT"
+
+        final_action = "ENQUEUE_NEXT"
+        settle_deadline = time.monotonic() + 30
+        while time.monotonic() < settle_deadline:
+            if final_action == "ACK":
+                break
+            method, _properties, body = rabbit.channel.basic_get(
+                queue=TASK_QUEUE,
+                auto_ack=False,
+            )
+            if method is None:
+                time.sleep(0.1)
+                continue
+            queued_task = json.loads(body)
+            if queued_task.get("workflow_id") != workflow_id:
+                rabbit.channel.basic_nack(method.delivery_tag, requeue=True)
+                time.sleep(0.1)
+                continue
+            final_action = process_rabbit_delivery(
+                RabbitDelivery(rabbit.channel, method, body),
+                rabbit_publisher=rabbit,
+            )
+        assert final_action == "ACK", "Timed out waiting for the workflow to reach a terminal ack."
 
         workflow = Workflow.objects.get(pk=workflow_id)
         assert workflow.state == Workflow.State.SUCCEEDED
-        assert workflow.attempts.count() == 1
+        assert WorkflowAttempt.objects.filter(workflow=workflow, stage="validate_order").count() == 1
 
         workflow_response = None
         poll_deadline = time.monotonic() + 10
