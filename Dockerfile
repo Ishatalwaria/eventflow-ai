@@ -2,6 +2,10 @@ FROM python:3.12.15-slim-trixie
 
 COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /uvx /bin/
 
+RUN apt-get update \
+    && apt-get install --yes --only-upgrade apt libapt-pkg7.0 \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
