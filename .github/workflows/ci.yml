@@ -206,7 +206,7 @@ jobs:
       - name: Build application image
         run: docker build --pull --tag eventflow-ai:ci .
       - name: Scan image for OS and library vulnerabilities
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: eventflow-ai:ci
           format: table
