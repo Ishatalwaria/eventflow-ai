@@ -33,9 +33,8 @@ class InventoryListView(APIView):
         client_id = request.query_params.get("client_id")
         if client_id:
             queryset = queryset.filter(product__client_id=client_id)
-        items = (
-            queryset.select_related("product", "product__client")
-            .order_by("product__client__name", "product__sku")
+        items = queryset.select_related("product", "product__client").order_by(
+            "product__client__name", "product__sku"
         )
         return Response(InventoryItemSerializer(items, many=True).data)
 

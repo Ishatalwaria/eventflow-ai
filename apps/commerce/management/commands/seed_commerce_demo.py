@@ -26,6 +26,4 @@ class Command(BaseCommand):
         for client in clients:
             seed_demo_catalog_for_client(client)
             count += 1
-        self.stdout.write(
-            self.style.SUCCESS(f"Seeded demo catalog for {count} active client(s).")
-        )
+        self.stdout.write(self.style.SUCCESS(f"Seeded demo catalog for {count} active client(s)."))
