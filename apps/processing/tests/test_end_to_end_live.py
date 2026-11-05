@@ -38,6 +38,17 @@ def test_authenticated_event_reaches_terminal_workflow_through_live_brokers():
         pytest.skip("Set EVENTFLOW_RUN_BROKER_INTEGRATION=1 to use live local brokers.")
 
     api_client, token = create_api_client("temporary-live-smoke")
+    from apps.commerce.models import InventoryItem, Product
+
+    product = Product.objects.create(
+        client=api_client,
+        sku="LIVE-SMOKE-SKU",
+        name="Live Smoke SKU",
+        unit_price_minor=1299,
+        active=True,
+    )
+    InventoryItem.objects.create(product=product, on_hand=10, reserved=0)
+
     correlation_id = f"live-smoke-{uuid.uuid4()}"
     payload = {
         "event_type": "order.created",
@@ -50,6 +61,7 @@ def test_authenticated_event_reaches_terminal_workflow_through_live_brokers():
             "order_id": str(uuid.uuid4()),
             "currency": "INR",
             "total_minor_units": 1299,
+            "payment_method_token": "ok_card",
             "items": [{"sku": "LIVE-SMOKE-SKU", "quantity": 1}],
         },
     }
@@ -154,7 +166,7 @@ def test_authenticated_event_reaches_terminal_workflow_through_live_brokers():
         assert task["workflow_id"] == workflow_id
 
         # Simulate a worker crash after the database commit and before Rabbit ack.
-        assert process_workflow_task(task).action == "ACK"
+        assert process_workflow_task(task).action == "ENQUEUE_NEXT"
         rabbit.close()
         rabbit = None
 
@@ -183,11 +195,32 @@ def test_authenticated_event_reaches_terminal_workflow_through_live_brokers():
                 rabbit.channel.basic_nack(method.delivery_tag, requeue=True)
             time.sleep(0.1)
         assert redelivery is not None, "Timed out waiting for the unacknowledged task to requeue."
-        assert process_rabbit_delivery(redelivery, rabbit_publisher=rabbit) == "ACK"
+        assert process_rabbit_delivery(redelivery, rabbit_publisher=rabbit) == "ENQUEUE_NEXT"
+
+        # Drive remaining saga stages until the workflow reaches a terminal state
+        stage_deadline = time.monotonic() + 30
+        while time.monotonic() < stage_deadline:
+            method, _properties, body = rabbit.channel.basic_get(
+                queue=TASK_QUEUE,
+                auto_ack=False,
+            )
+            if method is None:
+                time.sleep(0.05)
+                continue
+            stage_task = json.loads(body)
+            if stage_task.get("workflow_id") != workflow_id:
+                rabbit.channel.basic_nack(method.delivery_tag, requeue=True)
+                time.sleep(0.05)
+                continue
+            stage_delivery = RabbitDelivery(rabbit.channel, method, body)
+            action = process_rabbit_delivery(stage_delivery, rabbit_publisher=rabbit)
+            if action == "ACK":
+                break
 
         workflow = Workflow.objects.get(pk=workflow_id)
         assert workflow.state == Workflow.State.SUCCEEDED
-        assert workflow.attempts.count() == 1
+        assert workflow.attempts.count() == 6
+        assert workflow.attempts.filter(stage="validate_order").count() == 1
 
         workflow_response = None
         poll_deadline = time.monotonic() + 10
