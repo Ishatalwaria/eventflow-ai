@@ -50,11 +50,9 @@ ClickHouse Analytics Consumer ──> ClickHouse Table: workflow_lifecycle_facts
 ```
 
 For complete technical specifications, see:
-- [System Architecture Overview](docs/architecture/overview.md)
-- [Broker Topology & Delivery Semantics](docs/architecture/broker-topology.md)
+- [Architecture Documentation & Specifications](docs/architecture/README.md)
 - [Operations Runbook & Failure Drills](docs/operations-runbook.md)
 - [Production Security Checklist](docs/security-checklist.md)
-- [Interview notes](docs/interview-faq.md)
 
 ---
 
